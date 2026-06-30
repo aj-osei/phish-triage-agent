@@ -1,23 +1,30 @@
 # Phish Triage Agent
 
-A Python-based MVP for automating parts of phishing email triage.
+A Python MVP for helping automate phishing email triage.
 
 ## Goal
 
-The goal is to parse `.eml` files safely, extract useful triage details, and generate a structured report for analyst review.
+The goal is to safely parse `.eml` files, extract useful email details, and generate a triage report for analyst review.
 
-## Planned MVP Features
+## MVP Plan
 
-- Read a local `.eml` file
-- Extract sender, recipient, subject, and date
-- Extract plain text and HTML body content safely
-- Extract URLs from the email body
-- Generate a Markdown triage report
-- Later: watch a folder for new emails
-- Later: add reputation checks using tools like VirusTotal or URLScan
+### Phase 1: Manual Parser
+- Read one safe test `.eml` file
+- Extract sender, recipient, subject, date, and body preview
+- Extract URLs without opening them
+- Print the results in the terminal
 
-## Safety Notes
+### Phase 2: Report Generator
+- Save the extracted details into a Markdown report
 
-This project should not render email HTML, open links, or execute attachments. It should only parse email files as text/data.
+### Phase 3: Folder Watcher
+- Watch a folder for new `.eml` files
+- Automatically parse new files
 
-No real phishing emails, internal tickets, screenshots, API keys, or company data should be committed to this repo.
+### Safety Notes
+
+- Do not use real phishing emails in GitHub
+- Do not commit internal screenshots, tickets, API keys, or company data
+- Do not render HTML
+- Do not open links automatically
+- Real samples should only be tested inside the VM
