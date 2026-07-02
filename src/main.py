@@ -4,6 +4,7 @@ import re
 import sys
 import hashlib
 import time
+import ipaddress
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
@@ -103,6 +104,27 @@ def get_all_headers_or_not_found(message, header_name: str) -> List[str]:
     return decoded_values
 
 
+def format_address_line(header_value: str | None) -> str:
+    """Format one email address header as Name <email> or email only."""
+    if not header_value:
+        return "Not found"
+
+    decoded_value = decode_header_value(header_value)
+    if decoded_value == "(not provided)":
+        return "Not found"
+
+    display_name, email_address = parseaddr(decoded_value)
+    clean_name = " ".join(display_name.split()).strip('"')
+
+    if email_address:
+        if clean_name:
+            return f"{clean_name} <{email_address}>"
+        return email_address
+
+    # Fall back to the decoded value if it is present but non-standard.
+    return decoded_value.strip() or "Not found"
+
+
 def parse_authentication_results(auth_values: List[str]) -> Dict[str, str]:
     """Extract SPF, DKIM, and DMARC result tokens from Authentication-Results."""
     combined = " ".join(v for v in auth_values if v != "Not found")
@@ -157,21 +179,57 @@ def build_received_route_details(received_headers: List[str]) -> List[Dict[str, 
 
 
 def find_likely_originating_ip(received_routes: List[Dict[str, object]]) -> str:
-    """Use the earliest observed Received hop with an IP as a possible origin."""
+    """Use the earliest observed Received hop with a usable public IP."""
     for route in reversed(received_routes):
         source_ip = route.get("source_ip", "Not found")
-        if source_ip != "Not found":
+        if source_ip != "Not found" and is_usable_public_ip(source_ip):
             return source_ip
     return "Not found"
+
+
+def is_usable_public_ip(source_ip: str) -> bool:
+    """Return True only for public, externally routable IP addresses."""
+    try:
+        ip_obj = ipaddress.ip_address(source_ip)
+    except ValueError:
+        return False
+
+    if ip_obj.is_private:
+        return False
+    if ip_obj.is_loopback:
+        return False
+    if ip_obj.is_link_local:
+        return False
+    if ip_obj.is_multicast:
+        return False
+    if ip_obj.is_reserved:
+        return False
+    if ip_obj.is_unspecified:
+        return False
+    return True
+
+
+def get_likely_originating_ip_note(likely_originating_ip: str) -> str:
+    """Return an explanation of likely-originating-IP selection."""
+    if likely_originating_ip == "Not found":
+        return "No public external source IP was found in Received headers."
+    return "Based on the earliest observed Received header with a usable public source IP."
 
 
 def find_last_sending_relay_ip(received_routes: List[Dict[str, object]]) -> str:
-    """Use the latest Received hop source IP as the last relay indicator."""
+    """Use the latest Received hop with a usable public IP as last relay."""
     for route in received_routes:
         source_ip = route.get("source_ip", "Not found")
-        if source_ip != "Not found":
+        if source_ip != "Not found" and is_usable_public_ip(source_ip):
             return source_ip
     return "Not found"
+
+
+def get_last_sending_relay_ip_note(last_sending_relay_ip: str) -> str:
+    """Return an explanation of last-relay-IP selection."""
+    if last_sending_relay_ip == "Not found":
+        return "No public external relay IP was found in Received headers."
+    return "Based on the latest Received header with a usable public source IP."
 
 
 def extract_plain_text_body(message) -> str:
@@ -201,9 +259,40 @@ def extract_plain_text_body(message) -> str:
     return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
 
 
-def make_body_preview(body_text: str, max_chars: int = 240) -> str:
+def remove_likely_signature_text(body_text: str) -> str:
+    """Trim common signature lines to keep preview text readable."""
+    lines = [line.strip() for line in body_text.splitlines() if line.strip()]
+    preview_lines: List[str] = []
+
+    for line in lines:
+        lower_line = line.lower()
+
+        if line == "--":
+            break
+        if lower_line.startswith("sent from"):
+            break
+
+        looks_like_signature_line = " | " in line and (
+            "university" in lower_line
+            or "college" in lower_line
+            or "student" in lower_line
+            or "mailto:" in lower_line
+            or "p:" in lower_line
+        )
+        if looks_like_signature_line and preview_lines:
+            break
+
+        preview_lines.append(line)
+
+    if not preview_lines:
+        return body_text
+    return "\n".join(preview_lines)
+
+
+def make_body_preview(body_text: str, max_chars: int = 300) -> str:
     """Build a short one-line preview of the email body."""
-    compact_text = " ".join(body_text.split())
+    cleaned_text = remove_likely_signature_text(body_text)
+    compact_text = " ".join(cleaned_text.split())
     if not compact_text:
         return "(no plain-text body found)"
 
@@ -284,11 +373,31 @@ def build_url_entries(urls: List[str]) -> List[Dict[str, str]]:
     return entries
 
 
-def is_attachment_part(part) -> bool:
+def normalize_filename(filename: str | None) -> str:
+    """Return a readable filename value, or Not found when absent."""
+    if not filename:
+        return "Not found"
+
+    decoded_filename = decode_header_value(filename)
+    if decoded_filename == "(not provided)":
+        return "Not found"
+    return decoded_filename
+
+
+def is_inline_content_part(part) -> bool:
+    """Return True when a message part is explicitly marked inline."""
+    disposition = (part.get_content_disposition() or "").lower()
+    return disposition == "inline"
+
+
+def is_true_attachment_part(part) -> bool:
     """Return True when a message part should be treated as an attachment."""
     disposition = (part.get_content_disposition() or "").lower()
     if disposition == "attachment":
         return True
+
+    if disposition == "inline":
+        return False
 
     # Some emails omit attachment disposition but still provide a filename.
     return bool(part.get_filename())
@@ -307,7 +416,7 @@ def hash_bytes_sha256(content: bytes) -> str:
 
 def build_attachment_entry(part) -> Dict[str, object]:
     """Build a metadata dictionary for one attachment part."""
-    filename = decode_header_value(part.get_filename())
+    filename = normalize_filename(part.get_filename())
     content_type = part.get_content_type() or "application/octet-stream"
     attachment_bytes = get_attachment_bytes(part)
 
@@ -319,25 +428,32 @@ def build_attachment_entry(part) -> Dict[str, object]:
     }
 
 
-def extract_attachments(message) -> List[Dict[str, object]]:
-    """Extract safe metadata for attachments from the parsed email."""
+def extract_content_parts(message) -> Dict[str, List[Dict[str, object]]]:
+    """Extract safe metadata for true attachments and inline content."""
     attachments: List[Dict[str, object]] = []
+    inline_content: List[Dict[str, object]] = []
 
     if not message.is_multipart():
-        return attachments
+        return {"attachments": attachments, "inline_content": inline_content}
 
     for part in message.walk():
-        if not is_attachment_part(part):
+        if part.is_multipart():
             continue
-        attachments.append(build_attachment_entry(part))
 
-    return attachments
+        if is_inline_content_part(part):
+            inline_content.append(build_attachment_entry(part))
+            continue
+
+        if is_true_attachment_part(part):
+            attachments.append(build_attachment_entry(part))
+
+    return {"attachments": attachments, "inline_content": inline_content}
 
 
 def build_summary_data(message) -> Dict[str, object]:
     """Extract a simple summary dictionary from the parsed email."""
-    sender = parseaddr(decode_header_value(message.get("From")))[1] or "(not provided)"
-    recipient = parseaddr(decode_header_value(message.get("To")))[1] or "(not provided)"
+    sender = format_address_line(message.get("From"))
+    recipient = format_address_line(message.get("To"))
     subject = decode_header_value(message.get("Subject"))
     sent_date = decode_header_value(message.get("Date"))
 
@@ -345,14 +461,18 @@ def build_summary_data(message) -> Dict[str, object]:
     preview = make_body_preview(body_text)
     urls = extract_urls(body_text)
     url_entries = build_url_entries(urls)
-    attachments = extract_attachments(message)
+    content_parts = extract_content_parts(message)
+    attachments = content_parts["attachments"]
+    inline_content = content_parts["inline_content"]
     authentication_results = get_all_headers_or_not_found(message, "Authentication-Results")
     return_path = get_header_or_not_found(message, "Return-Path")
-    reply_to = get_header_or_not_found(message, "Reply-To")
+    reply_to = format_address_line(message.get("Reply-To"))
     received_headers = get_all_headers_or_not_found(message, "Received")
     received_routes = build_received_route_details(received_headers)
     likely_originating_ip = find_likely_originating_ip(received_routes)
+    likely_originating_ip_note = get_likely_originating_ip_note(likely_originating_ip)
     last_sending_relay_ip = find_last_sending_relay_ip(received_routes)
+    last_sending_relay_ip_note = get_last_sending_relay_ip_note(last_sending_relay_ip)
     auth_protocol_results = parse_authentication_results(authentication_results)
 
     return {
@@ -364,13 +484,16 @@ def build_summary_data(message) -> Dict[str, object]:
         "urls": urls,
         "url_entries": url_entries,
         "attachments": attachments,
+        "inline_content": inline_content,
         "authentication_results": authentication_results,
         "return_path": return_path,
         "reply_to": reply_to,
         "received_headers": received_headers,
         "received_routes": received_routes,
         "likely_originating_ip": likely_originating_ip,
+        "likely_originating_ip_note": likely_originating_ip_note,
         "last_sending_relay_ip": last_sending_relay_ip,
+        "last_sending_relay_ip_note": last_sending_relay_ip_note,
         "spf_result": auth_protocol_results["spf"],
         "dkim_result": auth_protocol_results["dkim"],
         "dmarc_result": auth_protocol_results["dmarc"],
@@ -418,6 +541,7 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     """Build Markdown content for a local triage report."""
     url_entries = summary["url_entries"]
     attachments = summary["attachments"]
+    inline_content = summary["inline_content"]
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
@@ -452,6 +576,30 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
             if entry["decode_status"]:
                 lines.append(f"- **Decode Status:** {entry['decode_status']}")
             lines.append("")
+    else:
+        lines.append("- None")
+
+    lines.extend(
+        [
+            "",
+            "## Inline/Embedded Content",
+            "",
+        ]
+    )
+
+    if inline_content:
+        for index, embedded_part in enumerate(inline_content, start=1):
+            lines.extend(
+                [
+                    f"### Inline Item {index}",
+                    "",
+                    f"- **Filename:** {embedded_part['filename']}",
+                    f"- **Content Type:** {embedded_part['content_type']}",
+                    f"- **File Size (bytes):** {embedded_part['size_bytes']}",
+                    f"- **SHA-256:** {embedded_part['sha256']}",
+                    "",
+                ]
+            )
     else:
         lines.append("- None")
 
@@ -504,9 +652,9 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
             "These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.",
             "",
             f"- **Likely Originating IP:** {summary['likely_originating_ip']}",
-            "  - Based on the earliest observed Received header that includes a source IP.",
+            f"  - {summary['likely_originating_ip_note']}",
             f"- **Last Sending Relay Before Recipient Mail Server:** {summary['last_sending_relay_ip']}",
-            "  - Based on the latest Received header that includes a source IP.",
+            f"  - {summary['last_sending_relay_ip_note']}",
             "",
             "Parsed hops (earliest observed to latest):",
             "",
