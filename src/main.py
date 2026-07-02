@@ -30,10 +30,11 @@ def read_eml_bytes(eml_path: Path) -> bytes:
     return eml_path.read_bytes()
 
 
-def resolve_report_path() -> Path:
-    """Return the default Markdown report path in the reports folder."""
+def resolve_report_path(eml_path: Path) -> Path:
+    """Return a report path in reports/ based on the input .eml filename."""
     project_root = Path(__file__).resolve().parent.parent
-    return project_root / "reports" / "test_email_report.md"
+    report_filename = f"{eml_path.stem}_report.md"
+    return project_root / "reports" / report_filename
 
 
 def parse_email(raw_email: bytes):
@@ -529,7 +530,7 @@ def write_markdown_report(report_path: Path, report_content: str) -> None:
 def main() -> None:
     """Entry point for local .eml phishing triage parsing."""
     eml_path = resolve_eml_path()
-    report_path = resolve_report_path()
+    report_path = resolve_report_path(eml_path)
 
     if not eml_path.exists():
         print(f"Error: file not found: {eml_path}")
