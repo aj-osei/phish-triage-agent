@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import hashlib
+import time
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
@@ -14,15 +15,40 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
+WATCH_POLL_SECONDS = 3
+FILE_STABLE_WAIT_SECONDS = 2
 
 
-def resolve_eml_path() -> Path:
-    """Return the .eml path from CLI arg or default samples folder."""
-    if len(sys.argv) > 1:
-        return Path(sys.argv[1]).expanduser().resolve()
-
+def resolve_default_eml_path() -> Path:
+    """Return the default .eml path in the samples folder."""
     project_root = Path(__file__).resolve().parent.parent
     return project_root / "samples" / "test_email.eml"
+
+
+def resolve_eml_path(eml_path_arg: str | None) -> Path:
+    """Return an .eml path from CLI input or use the default sample."""
+    if eml_path_arg:
+        return Path(eml_path_arg).expanduser().resolve()
+    return resolve_default_eml_path()
+
+
+def parse_cli_args() -> Dict[str, object]:
+    """Parse command-line arguments for single-file or watch mode."""
+    args = sys.argv[1:]
+
+    if not args:
+        return {"mode": "single", "eml_path": resolve_default_eml_path()}
+
+    if args[0] == "--watch":
+        if len(args) != 2:
+            raise ValueError("Usage: python src/main.py --watch <watch_folder>")
+        watch_folder = Path(args[1]).expanduser().resolve()
+        return {"mode": "watch", "watch_folder": watch_folder}
+
+    if len(args) != 1:
+        raise ValueError("Usage: python src/main.py [path/to/file.eml]")
+
+    return {"mode": "single", "eml_path": resolve_eml_path(args[0])}
 
 
 def read_eml_bytes(eml_path: Path) -> bytes:
@@ -527,14 +553,13 @@ def write_markdown_report(report_path: Path, report_content: str) -> None:
     report_path.write_text(report_content, encoding="utf-8")
 
 
-def main() -> None:
-    """Entry point for local .eml phishing triage parsing."""
-    eml_path = resolve_eml_path()
+def process_eml_file(eml_path: Path) -> None:
+    """Parse one .eml file and write its Markdown triage report."""
     report_path = resolve_report_path(eml_path)
 
     if not eml_path.exists():
         print(f"Error: file not found: {eml_path}")
-        sys.exit(1)
+        return
 
     raw_email = read_eml_bytes(eml_path)
     message = parse_email(raw_email)
@@ -545,6 +570,87 @@ def main() -> None:
     report_content = build_markdown_report(summary)
     write_markdown_report(report_path, report_content)
     print(f"\nMarkdown report saved to: {report_path}")
+
+
+def is_stable_for_processing(file_path: Path, wait_seconds: int = FILE_STABLE_WAIT_SECONDS) -> bool:
+    """Check if file size is unchanged after a short wait."""
+    try:
+        first_size = file_path.stat().st_size
+    except OSError:
+        return False
+
+    time.sleep(wait_seconds)
+
+    try:
+        second_size = file_path.stat().st_size
+    except OSError:
+        return False
+
+    return first_size == second_size
+
+
+def list_eml_files(folder_path: Path) -> List[Path]:
+    """Return .eml files in a folder (non-recursive), sorted by name."""
+    eml_files = [
+        path for path in folder_path.iterdir() if path.is_file() and path.suffix.lower() == ".eml"
+    ]
+    return sorted(eml_files, key=lambda path: path.name.lower())
+
+
+def run_watch_mode(watch_folder: Path) -> None:
+    """Watch a folder for new .eml files and process each one once."""
+    if not watch_folder.exists() or not watch_folder.is_dir():
+        print(f"Error: watch folder not found: {watch_folder}")
+        sys.exit(1)
+
+    processed_files = {path.resolve() for path in list_eml_files(watch_folder)}
+    print(f"Watching folder for new .eml files: {watch_folder}")
+    print("Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            for eml_file in list_eml_files(watch_folder):
+                eml_file = eml_file.resolve()
+
+                if eml_file in processed_files:
+                    continue
+
+                print(f"\nDetected new .eml file: {eml_file}")
+
+                if not is_stable_for_processing(eml_file):
+                    print("File still changing. Will try again on next scan.")
+                    continue
+
+                try:
+                    process_eml_file(eml_file)
+                except Exception as error:
+                    print(f"Error processing {eml_file}: {error}")
+
+                processed_files.add(eml_file)
+
+            time.sleep(WATCH_POLL_SECONDS)
+    except KeyboardInterrupt:
+        print("\nStopped watch mode.")
+
+
+def main() -> None:
+    """Entry point for single-file parsing or folder watch mode."""
+    try:
+        cli_options = parse_cli_args()
+    except ValueError as error:
+        print(error)
+        sys.exit(1)
+
+    if cli_options["mode"] == "watch":
+        run_watch_mode(cli_options["watch_folder"])
+        return
+
+    eml_path = cli_options["eml_path"]
+    if not eml_path.exists():
+        print(f"Error: file not found: {eml_path}")
+        sys.exit(1)
+
+    process_eml_file(eml_path)
 
 
 if __name__ == "__main__":
