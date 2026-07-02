@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+import hashlib
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
@@ -256,6 +257,56 @@ def build_url_entries(urls: List[str]) -> List[Dict[str, str]]:
     return entries
 
 
+def is_attachment_part(part) -> bool:
+    """Return True when a message part should be treated as an attachment."""
+    disposition = (part.get_content_disposition() or "").lower()
+    if disposition == "attachment":
+        return True
+
+    # Some emails omit attachment disposition but still provide a filename.
+    return bool(part.get_filename())
+
+
+def get_attachment_bytes(part) -> bytes:
+    """Return decoded attachment bytes without saving or executing content."""
+    payload = part.get_payload(decode=True)
+    return payload if isinstance(payload, bytes) else b""
+
+
+def hash_bytes_sha256(content: bytes) -> str:
+    """Compute SHA-256 hash for attachment bytes."""
+    return hashlib.sha256(content).hexdigest()
+
+
+def build_attachment_entry(part) -> Dict[str, object]:
+    """Build a metadata dictionary for one attachment part."""
+    filename = decode_header_value(part.get_filename())
+    content_type = part.get_content_type() or "application/octet-stream"
+    attachment_bytes = get_attachment_bytes(part)
+
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": len(attachment_bytes),
+        "sha256": hash_bytes_sha256(attachment_bytes),
+    }
+
+
+def extract_attachments(message) -> List[Dict[str, object]]:
+    """Extract safe metadata for attachments from the parsed email."""
+    attachments: List[Dict[str, object]] = []
+
+    if not message.is_multipart():
+        return attachments
+
+    for part in message.walk():
+        if not is_attachment_part(part):
+            continue
+        attachments.append(build_attachment_entry(part))
+
+    return attachments
+
+
 def build_summary_data(message) -> Dict[str, object]:
     """Extract a simple summary dictionary from the parsed email."""
     sender = parseaddr(decode_header_value(message.get("From")))[1] or "(not provided)"
@@ -267,6 +318,7 @@ def build_summary_data(message) -> Dict[str, object]:
     preview = make_body_preview(body_text)
     urls = extract_urls(body_text)
     url_entries = build_url_entries(urls)
+    attachments = extract_attachments(message)
     authentication_results = get_all_headers_or_not_found(message, "Authentication-Results")
     return_path = get_header_or_not_found(message, "Return-Path")
     reply_to = get_header_or_not_found(message, "Reply-To")
@@ -284,6 +336,7 @@ def build_summary_data(message) -> Dict[str, object]:
         "body_preview": preview,
         "urls": urls,
         "url_entries": url_entries,
+        "attachments": attachments,
         "authentication_results": authentication_results,
         "return_path": return_path,
         "reply_to": reply_to,
@@ -337,6 +390,7 @@ def print_summary(summary: Dict[str, object]) -> None:
 def build_markdown_report(summary: Dict[str, object]) -> str:
     """Build Markdown content for a local triage report."""
     url_entries = summary["url_entries"]
+    attachments = summary["attachments"]
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
@@ -371,6 +425,30 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
             if entry["decode_status"]:
                 lines.append(f"- **Decode Status:** {entry['decode_status']}")
             lines.append("")
+    else:
+        lines.append("- None")
+
+    lines.extend(
+        [
+            "",
+            "## Attachments Found",
+            "",
+        ]
+    )
+
+    if attachments:
+        for index, attachment in enumerate(attachments, start=1):
+            lines.extend(
+                [
+                    f"### Attachment {index}",
+                    "",
+                    f"- **Filename:** {attachment['filename']}",
+                    f"- **Content Type:** {attachment['content_type']}",
+                    f"- **File Size (bytes):** {attachment['size_bytes']}",
+                    f"- **SHA-256:** {attachment['sha256']}",
+                    "",
+                ]
+            )
     else:
         lines.append("- None")
 
