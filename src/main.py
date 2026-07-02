@@ -8,6 +8,7 @@ from email.parser import BytesParser
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
@@ -190,6 +191,71 @@ def extract_urls(text: str) -> List[str]:
     return unique_urls
 
 
+def is_microsoft_safe_link(url: str) -> bool:
+    """Return True when a URL points to Microsoft Safe Links."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    hostname = (parsed.hostname or "").lower()
+    return hostname.endswith("safelinks.protection.outlook.com")
+
+
+def decode_safe_link_url(url: str) -> str | None:
+    """Extract and decode the original destination from a Safe Link URL."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname.endswith("safelinks.protection.outlook.com"):
+        return None
+
+    query_params = parse_qs(parsed.query)
+    encoded_destinations = query_params.get("url", [])
+    if not encoded_destinations:
+        return None
+
+    original_destination = encoded_destinations[0]
+    return unquote(original_destination)
+
+
+def build_url_entries(urls: List[str]) -> List[Dict[str, str]]:
+    """Build URL entries with original, decoded (if present), and type."""
+    entries: List[Dict[str, str]] = []
+
+    for url in urls:
+        entry = {
+            "original_url": url,
+            "url_type": "Direct URL",
+            "decoded_url": "",
+            "decode_status": "",
+        }
+
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            entry["url_type"] = "Unparseable URL"
+            entry["decode_status"] = "Could not parse URL. Kept original URL."
+            entries.append(entry)
+            continue
+
+        hostname = (parsed.hostname or "").lower()
+        if hostname.endswith("safelinks.protection.outlook.com"):
+            entry["url_type"] = "Safe Link"
+            decoded_url = decode_safe_link_url(url)
+            if decoded_url:
+                entry["decoded_url"] = decoded_url
+            else:
+                entry["decode_status"] = "Safe Link detected, but no decodable url parameter was found."
+
+        entries.append(entry)
+
+    return entries
+
+
 def build_summary_data(message) -> Dict[str, object]:
     """Extract a simple summary dictionary from the parsed email."""
     sender = parseaddr(decode_header_value(message.get("From")))[1] or "(not provided)"
@@ -200,6 +266,7 @@ def build_summary_data(message) -> Dict[str, object]:
     body_text = extract_plain_text_body(message)
     preview = make_body_preview(body_text)
     urls = extract_urls(body_text)
+    url_entries = build_url_entries(urls)
     authentication_results = get_all_headers_or_not_found(message, "Authentication-Results")
     return_path = get_header_or_not_found(message, "Return-Path")
     reply_to = get_header_or_not_found(message, "Reply-To")
@@ -216,6 +283,7 @@ def build_summary_data(message) -> Dict[str, object]:
         "sent_date": sent_date,
         "body_preview": preview,
         "urls": urls,
+        "url_entries": url_entries,
         "authentication_results": authentication_results,
         "return_path": return_path,
         "reply_to": reply_to,
@@ -268,7 +336,7 @@ def print_summary(summary: Dict[str, object]) -> None:
 
 def build_markdown_report(summary: Dict[str, object]) -> str:
     """Build Markdown content for a local triage report."""
-    urls = summary["urls"]
+    url_entries = summary["url_entries"]
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
@@ -292,9 +360,17 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
         "",
     ]
 
-    if urls:
-        for url in urls:
-            lines.append(f"- {url}")
+    if url_entries:
+        for index, entry in enumerate(url_entries, start=1):
+            lines.append(f"### URL {index}")
+            lines.append("")
+            lines.append(f"- **Original URL:** {entry['original_url']}")
+            if entry["decoded_url"]:
+                lines.append(f"- **Decoded URL:** {entry['decoded_url']}")
+            lines.append(f"- **URL Type:** {entry['url_type']}")
+            if entry["decode_status"]:
+                lines.append(f"- **Decode Status:** {entry['decode_status']}")
+            lines.append("")
     else:
         lines.append("- None")
 
