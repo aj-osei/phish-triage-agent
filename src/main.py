@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import sys
 import hashlib
@@ -61,6 +62,13 @@ def resolve_report_path(eml_path: Path) -> Path:
     """Return a report path in reports/ based on the input .eml filename."""
     project_root = Path(__file__).resolve().parent.parent
     report_filename = f"{eml_path.stem}_report.md"
+    return project_root / "reports" / report_filename
+
+
+def resolve_html_report_path(eml_path: Path) -> Path:
+    """Return an HTML report path in reports/ based on the input .eml filename."""
+    project_root = Path(__file__).resolve().parent.parent
+    report_filename = f"{eml_path.stem}_report.html"
     return project_root / "reports" / report_filename
 
 
@@ -695,8 +703,219 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def html_escape_text(value: object) -> str:
+    """Escape arbitrary values for safe HTML rendering."""
+    return html.escape(str(value), quote=True)
+
+
+def build_html_report(summary: Dict[str, object]) -> str:
+    """Build HTML content for a local triage report."""
+    url_entries = summary["url_entries"]
+    attachments = summary["attachments"]
+    inline_content = summary["inline_content"]
+    authentication_results = summary["authentication_results"]
+    received_headers = summary["received_headers"]
+    received_routes = summary["received_routes"]
+
+    def render_kv_rows(items: List[tuple[str, object]]) -> str:
+        rows = []
+        for label, value in items:
+            rows.append(
+                "<tr><th>"
+                + html_escape_text(label)
+                + "</th><td>"
+                + html_escape_text(value)
+                + "</td></tr>"
+            )
+        return "\n".join(rows)
+
+    def render_empty_or_text_list(values: List[str]) -> str:
+        if not values:
+            return '<p class="muted">None</p>'
+
+        items = "\n".join(f"<li>{html_escape_text(value)}</li>" for value in values)
+        return f"<ul>{items}</ul>"
+
+    def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:
+        if not items:
+            return '<p class="muted">None</p>'
+
+        cards = []
+        for index, item in enumerate(items, start=1):
+            cards.append(
+                "<article class=\"card\">"
+                f"<h3>{html_escape_text(title_prefix)} {index}</h3>"
+                "<table>"
+                + render_kv_rows(
+                    [
+                        ("Filename", item["filename"]),
+                        ("Content Type", item["content_type"]),
+                        ("File Size (bytes)", item["size_bytes"]),
+                        ("SHA-256", item["sha256"]),
+                    ]
+                )
+                + "</table></article>"
+            )
+        return "\n".join(cards)
+
+    def render_urls() -> str:
+        if not url_entries:
+            return '<p class="muted">None</p>'
+
+        cards = []
+        for index, entry in enumerate(url_entries, start=1):
+            rows = [
+                ("Original URL", entry["original_url"]),
+                ("URL Type", entry["url_type"]),
+            ]
+            if entry["decoded_url"]:
+                rows.append(("Decoded URL", entry["decoded_url"]))
+            if entry["decode_status"]:
+                rows.append(("Decode Status", entry["decode_status"]))
+
+            cards.append(
+                "<article class=\"card\">"
+                f"<h3>URL {index}</h3>"
+                "<table>"
+                + render_kv_rows(rows)
+                + "</table></article>"
+            )
+        return "\n".join(cards)
+
+    def render_received_routes() -> str:
+        if not received_routes:
+            return '<p class="muted">Not found</p>'
+
+        cards = []
+        for index, route in enumerate(list(reversed(received_routes)), start=1):
+            rows = [
+                ("From server", route["from_server"]),
+                ("Source IP", route["source_ip"]),
+                ("By server", route["by_server"]),
+                ("Timestamp", route["timestamp"]),
+                ("Raw header", route["raw"]),
+            ]
+            if not route["parsed"]:
+                rows.append(("Parse status", "Could not parse this header reliably."))
+
+            cards.append(
+                "<article class=\"card\">"
+                f"<h3>Hop {index}</h3>"
+                "<table>"
+                + render_kv_rows(rows)
+                + "</table></article>"
+            )
+        return "\n".join(cards)
+
+    html_parts = [
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>Phishing Triage Report</title>",
+        "<style>",
+        """
+        :root { color-scheme: light; }
+        body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 24px; background: #f5f7fb; color: #1f2937; }
+        .report { max-width: 1080px; margin: 0 auto; background: #fff; border: 1px solid #d9e1ec; border-radius: 14px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); overflow: hidden; }
+        header { padding: 24px 28px; background: linear-gradient(135deg, #102a43, #243b53); color: #fff; }
+        header h1 { margin: 0; font-size: 28px; }
+        main { padding: 24px 28px 32px; }
+        section { margin-bottom: 28px; }
+        section h2 { margin: 0 0 14px; font-size: 20px; border-bottom: 2px solid #d9e1ec; padding-bottom: 8px; }
+        .muted { color: #52606d; }
+        .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d9e1ec; border-radius: 10px; padding: 14px; margin: 0; overflow-wrap: anywhere; }
+        .summary-table, table { width: 100%; border-collapse: collapse; }
+        .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; }
+        .summary-table th, .card th { width: 230px; background: #f8fafc; font-weight: 700; }
+        .card { border: 1px solid #d9e1ec; border-radius: 12px; overflow: hidden; margin-top: 14px; background: #fff; }
+        .card h3 { margin: 0; padding: 14px 16px; background: #eef4fb; font-size: 16px; }
+        .card table { margin: 0; }
+        ul { margin: 0; padding-left: 22px; }
+        li + li { margin-top: 8px; }
+        .note { margin: 0 0 12px; padding: 12px 14px; background: #f8fafc; border-left: 4px solid #3b82f6; border-radius: 8px; }
+        @media (max-width: 720px) {
+          body { padding: 12px; }
+          header, main { padding-left: 16px; padding-right: 16px; }
+          .summary-table th, .card th { width: 40%; }
+        }
+        """
+        .strip(),
+        "</style>",
+        "</head>",
+        "<body>",
+        '<div class="report">',
+        "<header><h1>Phishing Triage Report</h1></header>",
+        "<main>",
+        '<section><h2>Email Summary</h2><table class="summary-table">',
+        render_kv_rows(
+            [
+                ("From", summary["sender"]),
+                ("To", summary["recipient"]),
+                ("Subject", summary["subject"]),
+                ("Date", summary["sent_date"]),
+                ("Return-Path", summary["return_path"]),
+                ("Reply-To", summary["reply_to"]),
+            ]
+        ),
+        "</table></section>",
+        '<section><h2>Body Preview</h2><div class="content">'
+        + html_escape_text(summary["body_preview"])
+        + "</div></section>",
+        '<section><h2>URLs Found</h2>',
+        render_urls(),
+        "</section>",
+        '<section><h2>Inline/Embedded Content</h2>',
+        render_content_cards(inline_content, "Inline Item"),
+        "</section>",
+        '<section><h2>Attachments Found</h2>',
+        render_content_cards(attachments, "Attachment"),
+        "</section>",
+        '<section><h2>Parsed Authentication Checks</h2><table class="summary-table">',
+        render_kv_rows(
+            [
+                ("SPF", summary["spf_result"]),
+                ("DKIM", summary["dkim_result"]),
+                ("DMARC", summary["dmarc_result"]),
+            ]
+        ),
+        "</table></section>",
+        '<section><h2>Authentication-Results Header</h2>',
+        render_empty_or_text_list(authentication_results),
+        "</section>",
+        '<section><h2>Mail Route / Received Headers</h2>',
+        '<p class="note">These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.</p>',
+        '<table class="summary-table">',
+        render_kv_rows(
+            [
+                ("Likely Originating IP", summary["likely_originating_ip"]),
+                ("Likely Originating IP Note", summary["likely_originating_ip_note"]),
+                ("Last Sending Relay Before Recipient Mail Server", summary["last_sending_relay_ip"]),
+                ("Last Sending Relay Note", summary["last_sending_relay_ip_note"]),
+            ]
+        ),
+        "</table>",
+        '<p class="muted" style="margin-top: 16px;">Parsed hops (earliest observed to latest):</p>',
+        render_received_routes(),
+        "</section>",
+        '<section><h2>Raw Received Headers</h2>',
+        render_empty_or_text_list(received_headers),
+        "</section>",
+        "</main></div></body></html>",
+    ]
+
+    return "\n".join(html_parts) + "\n"
+
+
 def write_markdown_report(report_path: Path, report_content: str) -> None:
     """Write report content to reports/test_email_report.md."""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report_content, encoding="utf-8")
+
+
+def write_html_report(report_path: Path, report_content: str) -> None:
+    """Write report content to reports/test_email_report.html."""
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report_content, encoding="utf-8")
 
@@ -704,6 +923,7 @@ def write_markdown_report(report_path: Path, report_content: str) -> None:
 def process_eml_file(eml_path: Path) -> None:
     """Parse one .eml file and write its Markdown triage report."""
     report_path = resolve_report_path(eml_path)
+    html_report_path = resolve_html_report_path(eml_path)
 
     if not eml_path.exists():
         print(f"Error: file not found: {eml_path}")
@@ -716,8 +936,11 @@ def process_eml_file(eml_path: Path) -> None:
     print_summary(summary)
 
     report_content = build_markdown_report(summary)
+    html_report_content = build_html_report(summary)
     write_markdown_report(report_path, report_content)
+    write_html_report(html_report_path, html_report_content)
     print(f"\nMarkdown report saved to: {report_path}")
+    print(f"HTML report saved to: {html_report_path}")
 
 
 def is_stable_for_processing(file_path: Path, wait_seconds: int = FILE_STABLE_WAIT_SECONDS) -> bool:
