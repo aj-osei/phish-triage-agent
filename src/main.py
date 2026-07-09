@@ -19,6 +19,22 @@ URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
 WATCH_POLL_SECONDS = 3
 FILE_STABLE_WAIT_SECONDS = 2
+DOCUMENTATION_IP_NETWORKS = [
+    ipaddress.ip_network("192.0.2.0/24"),
+    ipaddress.ip_network("198.51.100.0/24"),
+    ipaddress.ip_network("203.0.113.0/24"),
+    ipaddress.ip_network("2001:db8::/32"),
+]
+IP_CLASSIFICATION_LABELS = {
+    "public": "Public IP",
+    "private": "Private IP",
+    "link-local": "Link-local IP",
+    "loopback": "Loopback IP",
+    "multicast": "Multicast IP",
+    "reserved/test/documentation": "Reserved/test/documentation IP",
+    "unspecified": "Unspecified IP",
+    "invalid": "Invalid IP",
+}
 
 
 def resolve_default_eml_path() -> Path:
@@ -151,6 +167,133 @@ def normalize_header_whitespace(value: str) -> str:
     return " ".join(value.split())
 
 
+def classify_ip_address(source_ip: str) -> str:
+    """Classify an IP string using the standard library ipaddress module."""
+    try:
+        ip_obj = ipaddress.ip_address(source_ip)
+    except ValueError:
+        return "invalid"
+
+    if ip_obj.is_unspecified:
+        return "unspecified"
+    if ip_obj.is_loopback:
+        return "loopback"
+    if ip_obj.is_multicast:
+        return "multicast"
+    if ip_obj.is_link_local:
+        return "link-local"
+
+    if any(ip_obj in network for network in DOCUMENTATION_IP_NETWORKS) or ip_obj.is_reserved:
+        return "reserved/test/documentation"
+
+    if ip_obj.is_private:
+        return "private"
+
+    return "public"
+
+
+def format_ip_classification_label(classification: str) -> str:
+    """Return a user-facing label for an IP classification token."""
+    return IP_CLASSIFICATION_LABELS.get(classification, "Invalid IP")
+
+
+def extract_ip_from_text(value: str | None, pattern: re.Pattern[str]) -> str:
+    """Extract and validate an IP from text using a targeted regex pattern."""
+    if not value:
+        return "Not found"
+
+    match = pattern.search(value)
+    if not match:
+        return "Not found"
+
+    candidate = match.group(1).strip().strip("[]()<>;,.")
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return "Not found"
+
+
+def extract_header_sender_ip(header_values: List[str]) -> str:
+    """Extract sender IP hints from Authentication-Results family headers."""
+    sender_ip_pattern = re.compile(r"sender\s+ip\s+is\s+([^\s;,)\]>]+)", re.IGNORECASE)
+    for value in header_values:
+        extracted_ip = extract_ip_from_text(value, sender_ip_pattern)
+        if extracted_ip != "Not found":
+            return extracted_ip
+    return "Not found"
+
+
+def extract_received_spf_ip(header_value: str) -> str:
+    """Extract sender IP hints from a Received-SPF header."""
+    return extract_ip_from_text(header_value, re.compile(r"client-ip=([^\s;,)\]>]+)", re.IGNORECASE))
+
+
+def extract_forefront_antispam_ip(header_value: str) -> str:
+    """Extract sender IP hints from an X-Forefront-Antispam-Report header."""
+    return extract_ip_from_text(header_value, re.compile(r"\bCIP:([^\s;,)\]>]+)", re.IGNORECASE))
+
+
+def extract_explicit_sender_ip(message, header_name: str) -> str:
+    """Extract a sender IP from a single explicit header value."""
+    header_value = message.get(header_name)
+    return extract_ip_from_text(header_value, re.compile(r"(?:\[)?([^\s\[\]()<>,;]+)(?:\])?"))
+
+
+def find_best_received_header_ip(received_routes: List[Dict[str, object]]) -> str:
+    """Return the best IP observed in Received headers, public or otherwise."""
+    for route in reversed(received_routes):
+        source_ip = route.get("source_ip", "Not found")
+        if source_ip != "Not found":
+            return source_ip
+    return "Not found"
+
+
+def find_sender_ip_analysis(message, received_routes: List[Dict[str, object]]) -> Dict[str, str]:
+    """Resolve a sender IP using multiple header families in priority order."""
+    auth_headers = get_all_headers_or_not_found(message, "Authentication-Results")
+    arc_auth_headers = get_all_headers_or_not_found(message, "ARC-Authentication-Results")
+
+    sender_ip = extract_header_sender_ip(auth_headers)
+    sender_source = "Authentication-Results"
+    if sender_ip == "Not found":
+        sender_ip = extract_header_sender_ip(arc_auth_headers)
+        sender_source = "ARC-Authentication-Results"
+
+    if sender_ip == "Not found":
+        sender_ip = extract_received_spf_ip(get_header_or_not_found(message, "Received-SPF"))
+        sender_source = "Received-SPF"
+
+    if sender_ip == "Not found":
+        sender_ip = extract_forefront_antispam_ip(get_header_or_not_found(message, "X-Forefront-Antispam-Report"))
+        sender_source = "X-Forefront-Antispam-Report"
+
+    if sender_ip == "Not found":
+        explicit_headers = [
+            "X-Originating-IP",
+            "X-Sender-IP",
+            "X-Client-IP",
+            "X-MS-Exchange-Organization-ConnectingIP",
+        ]
+        for header_name in explicit_headers:
+            sender_ip = extract_explicit_sender_ip(message, header_name)
+            if sender_ip != "Not found":
+                sender_source = header_name
+                break
+
+    if sender_ip == "Not found":
+        sender_ip = find_best_received_header_ip(received_routes)
+        sender_source = "Received headers fallback"
+
+    sender_classification = classify_ip_address(sender_ip) if sender_ip != "Not found" else "Not found"
+    return {
+        "sender_ip": sender_ip,
+        "sender_ip_source": sender_source if sender_ip != "Not found" else "Not found",
+        "sender_ip_classification": format_ip_classification_label(sender_classification)
+        if sender_ip != "Not found"
+        else "Not found",
+    }
+
+
 def parse_received_header(received_header: str) -> Dict[str, object]:
     """Parse a Received header into analyst-friendly route fields."""
     cleaned = normalize_header_whitespace(received_header)
@@ -163,11 +306,13 @@ def parse_received_header(received_header: str) -> Dict[str, object]:
     from_server = from_match.group(1).strip() if from_match else "Not found"
     by_server = by_match.group(1).strip() if by_match else "Not found"
     source_ip = ip_match.group(1).strip() if ip_match else "Not found"
+    ip_classification = classify_ip_address(source_ip) if source_ip != "Not found" else "Not found"
     is_parsed = any(value != "Not found" for value in [from_server, by_server, source_ip, timestamp])
 
     return {
         "from_server": from_server,
         "source_ip": source_ip,
+        "ip_classification": ip_classification,
         "by_server": by_server,
         "timestamp": timestamp,
         "raw": cleaned,
@@ -477,6 +622,7 @@ def build_summary_data(message) -> Dict[str, object]:
     reply_to = format_address_line(message.get("Reply-To"))
     received_headers = get_all_headers_or_not_found(message, "Received")
     received_routes = build_received_route_details(received_headers)
+    sender_ip_analysis = find_sender_ip_analysis(message, received_routes)
     likely_originating_ip = find_likely_originating_ip(received_routes)
     likely_originating_ip_note = get_likely_originating_ip_note(likely_originating_ip)
     last_sending_relay_ip = find_last_sending_relay_ip(received_routes)
@@ -498,6 +644,9 @@ def build_summary_data(message) -> Dict[str, object]:
         "reply_to": reply_to,
         "received_headers": received_headers,
         "received_routes": received_routes,
+        "sender_ip": sender_ip_analysis["sender_ip"],
+        "sender_ip_source": sender_ip_analysis["sender_ip_source"],
+        "sender_ip_classification": sender_ip_analysis["sender_ip_classification"],
         "likely_originating_ip": likely_originating_ip,
         "likely_originating_ip_note": likely_originating_ip_note,
         "last_sending_relay_ip": last_sending_relay_ip,
@@ -564,6 +713,12 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
         f"- **Date:** {summary['sent_date']}",
         f"- **Return-Path:** {summary['return_path']}",
         f"- **Reply-To:** {summary['reply_to']}",
+        "",
+        "## Sender IP Analysis",
+        "",
+        f"- **Sender IP:** {summary['sender_ip']}",
+        f"- **Sender IP Source:** {summary['sender_ip_source']}",
+        f"- **IP Classification:** {summary['sender_ip_classification']}",
         "",
         "## Body Preview",
         "",
@@ -659,7 +814,7 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
             "",
             "These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.",
             "",
-            f"- **Likely Originating IP:** {summary['likely_originating_ip']}",
+            f"- **Received Header Public Originating IP:** {summary['likely_originating_ip']}",
             f"  - {summary['likely_originating_ip_note']}",
             f"- **Last Sending Relay Before Recipient Mail Server:** {summary['last_sending_relay_ip']}",
             f"  - {summary['last_sending_relay_ip_note']}",
@@ -677,7 +832,8 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
                     f"### Hop {index}",
                     "",
                     f"- **From server:** {route['from_server']}",
-                    f"- **Source IP:** {route['source_ip']}",
+                    f"- **Source IP From Header:** {route['source_ip']}",
+                    f"- **IP Classification:** {route['ip_classification']}",
                     f"- **By server:** {route['by_server']}",
                     f"- **Timestamp:** {route['timestamp']}",
                 ]
@@ -790,7 +946,8 @@ def build_html_report(summary: Dict[str, object]) -> str:
         for index, route in enumerate(list(reversed(received_routes)), start=1):
             rows = [
                 ("From server", route["from_server"]),
-                ("Source IP", route["source_ip"]),
+                ("Source IP From Header", route["source_ip"]),
+                ("IP Classification", route["ip_classification"]),
                 ("By server", route["by_server"]),
                 ("Timestamp", route["timestamp"]),
                 ("Raw header", route["raw"]),
@@ -860,6 +1017,15 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
+        '<section><h2>Sender IP Analysis</h2><table class="summary-table">',
+        render_kv_rows(
+            [
+                ("Sender IP", summary["sender_ip"]),
+                ("Sender IP Source", summary["sender_ip_source"]),
+                ("IP Classification", summary["sender_ip_classification"]),
+            ]
+        ),
+        "</table></section>",
         '<section><h2>Body Preview</h2><div class="content">'
         + html_escape_text(summary["body_preview"])
         + "</div></section>",
@@ -889,8 +1055,8 @@ def build_html_report(summary: Dict[str, object]) -> str:
         '<table class="summary-table">',
         render_kv_rows(
             [
-                ("Likely Originating IP", summary["likely_originating_ip"]),
-                ("Likely Originating IP Note", summary["likely_originating_ip_note"]),
+                ("Received Header Public Originating IP", summary["likely_originating_ip"]),
+                ("Received Header Public Originating IP Note", summary["likely_originating_ip_note"]),
                 ("Last Sending Relay Before Recipient Mail Server", summary["last_sending_relay_ip"]),
                 ("Last Sending Relay Note", summary["last_sending_relay_ip_note"]),
             ]
