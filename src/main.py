@@ -850,7 +850,7 @@ def print_summary(summary: Dict[str, object]) -> None:
 
 
 def build_markdown_report(summary: Dict[str, object]) -> str:
-    """Build Markdown content for a local triage report."""
+    """Build a skimmable Markdown triage report without changing findings."""
     url_entries = summary["url_entries"]
     attachments = summary["attachments"]
     inline_content = summary["inline_content"]
@@ -870,15 +870,15 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
         f"- **Return-Path:** {summary['return_path']}",
         f"- **Reply-To:** {summary['reply_to']}",
         "",
+        "## Body Preview",
+        "",
+        summary["body_preview"],
+        "",
         "## Sender IP Analysis",
         "",
         f"- **Sender IP:** {summary['sender_ip']}",
         f"- **Sender IP Source:** {summary['sender_ip_source']}",
         f"- **IP Classification:** {summary['sender_ip_classification']}",
-        "",
-        "## Body Preview",
-        "",
-        summary["body_preview"],
         "",
         "## Quick Checks",
         "",
@@ -888,54 +888,43 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
         lines.append(f"- **{label}:** {status}")
         if detail:
             lines.append(f"  - {detail}")
-    lines.extend(["", "## URLs Found", ""])
 
+    lines.extend(
+        [
+            "",
+            "## Authentication Results",
+            "",
+            f"- **SPF:** {summary['spf_result']}",
+            f"- **DKIM:** {summary['dkim_result']}",
+            f"- **DMARC:** {summary['dmarc_result']}",
+            "",
+            "### Authentication-Results Header",
+            "",
+        ]
+    )
+    for value in authentication_results:
+        lines.append(f"- {normalize_header_whitespace(value)}")
+
+    lines.extend(["", "## URLs / Safe Links", ""])
     if url_entries:
         for index, entry in enumerate(url_entries, start=1):
-            lines.append(f"### URL {index}")
-            lines.append("")
-            lines.append(f"- **Original URL:** {entry['original_url']}")
+            lines.extend(
+                [
+                    f"### URL {index} ({entry['url_type']})",
+                    "",
+                    "- **Original URL:**",
+                    f"  {entry['original_url']}",
+                ]
+            )
             if entry["decoded_url"]:
-                lines.append(f"- **Decoded URL:** {entry['decoded_url']}")
-            lines.append(f"- **URL Type:** {entry['url_type']}")
+                lines.extend(["- **Decoded URL:**", f"  {entry['decoded_url']}"])
             if entry["decode_status"]:
                 lines.append(f"- **Decode Status:** {entry['decode_status']}")
             lines.append("")
     else:
         lines.append("- None")
 
-    lines.extend(
-        [
-            "",
-            "## Inline/Embedded Content",
-            "",
-        ]
-    )
-
-    if inline_content:
-        for index, embedded_part in enumerate(inline_content, start=1):
-            lines.extend(
-                [
-                    f"### Inline Item {index}",
-                    "",
-                    f"- **Filename:** {embedded_part['filename']}",
-                    f"- **Content Type:** {embedded_part['content_type']}",
-                    f"- **File Size (bytes):** {embedded_part['size_bytes']}",
-                    f"- **SHA-256:** {embedded_part['sha256']}",
-                    "",
-                ]
-            )
-    else:
-        lines.append("- None")
-
-    lines.extend(
-        [
-            "",
-            "## Attachments Found",
-            "",
-        ]
-    )
-
+    lines.extend(["", "## Attachments", ""])
     if attachments:
         for index, attachment in enumerate(attachments, start=1):
             lines.extend(
@@ -952,27 +941,28 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     else:
         lines.append("- None")
 
+    lines.extend(["", "### Inline / Embedded Content", ""])
+    if inline_content:
+        for index, embedded_part in enumerate(inline_content, start=1):
+            lines.extend(
+                [
+                    f"#### Inline Item {index}",
+                    "",
+                    f"- **Filename:** {embedded_part['filename']}",
+                    f"- **Content Type:** {embedded_part['content_type']}",
+                    f"- **File Size (bytes):** {embedded_part['size_bytes']}",
+                    f"- **SHA-256:** {embedded_part['sha256']}",
+                    "",
+                ]
+            )
+    else:
+        lines.append("- None")
+
     lines.extend(
         [
+            "## Technical Details",
             "",
-            "## Parsed Authentication Checks",
-            "",
-            f"- **SPF:** {summary['spf_result']}",
-            f"- **DKIM:** {summary['dkim_result']}",
-            f"- **DMARC:** {summary['dmarc_result']}",
-            "",
-            "## Authentication-Results Header",
-            "",
-        ]
-    )
-
-    for value in authentication_results:
-        lines.append(f"- {normalize_header_whitespace(value)}")
-
-    lines.extend(
-        [
-            "",
-            "## Mail Route / Received Headers",
+            "### Mail Route / Received Headers",
             "",
             "These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.",
             "",
@@ -987,11 +977,10 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     )
 
     if received_routes:
-        ordered_routes = list(reversed(received_routes))
-        for index, route in enumerate(ordered_routes, start=1):
+        for index, route in enumerate(reversed(received_routes), start=1):
             lines.extend(
                 [
-                    f"### Hop {index}",
+                    f"#### Hop {index}",
                     "",
                     f"- **From server:** {route['from_server']}",
                     f"- **Source IP From Header:** {route['source_ip']}",
@@ -1007,14 +996,7 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     else:
         lines.append("- Not found")
 
-    lines.extend(
-        [
-            "",
-            "## Raw Received Headers",
-            "",
-        ]
-    )
-
+    lines.extend(["", "### Raw Received Headers", ""])
     for value in received_headers:
         lines.append(f"- {normalize_header_whitespace(value)}")
 
@@ -1056,19 +1038,20 @@ def build_html_report(summary: Dict[str, object]) -> str:
         return f"<ul>{items}</ul>"
 
     def render_quick_checks() -> str:
-        rows = []
+        cards = []
         for label, status, detail in quick_checks:
-            value = "<strong>" + html_escape_text(status) + "</strong>"
+            value = '<span class="check-status">' + html_escape_text(status) + "</span>"
             if detail:
                 value += '<br><span class="check-detail">' + html_escape_text(detail) + "</span>"
-            rows.append(
-                "<tr><th>"
+            cards.append(
+                '<article class="quick-check">'
+                '<span class="check-label">'
                 + html_escape_text(label)
-                + "</th><td>"
+                + "</span>"
                 + value
-                + "</td></tr>"
+                + "</article>"
             )
-        return '<table class="summary-table">' + "\n".join(rows) + "</table>"
+        return '<div class="quick-checks">' + "\n".join(cards) + "</div>"
 
     def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:
         if not items:
@@ -1109,7 +1092,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
 
             cards.append(
                 "<article class=\"card\">"
-                f"<h3>URL {index}</h3>"
+                f"<h3>URL {index} <span class=\"card-meta\">{html_escape_text(entry['url_type'])}</span></h3>"
                 "<table>"
                 + render_kv_rows(rows)
                 + "</table></article>"
@@ -1157,16 +1140,22 @@ def build_html_report(summary: Dict[str, object]) -> str:
         header { padding: 24px 28px; background: linear-gradient(135deg, #102a43, #243b53); color: #fff; }
         header h1 { margin: 0; font-size: 28px; }
         main { padding: 24px 28px 32px; }
-        section { margin-bottom: 28px; }
+        section { margin-bottom: 32px; }
         section h2 { margin: 0 0 14px; font-size: 20px; border-bottom: 2px solid #d9e1ec; padding-bottom: 8px; }
+        section h3 { margin: 20px 0 10px; font-size: 16px; }
         .muted { color: #52606d; }
-        .check-detail { color: #52606d; font-size: 0.92em; }
+        .quick-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .quick-check { padding: 12px 14px; border: 1px solid #d9e1ec; border-radius: 10px; background: #f8fafc; min-width: 0; }
+        .check-label { display: block; color: #334e68; font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+        .check-status { font-weight: 700; }
+        .check-detail { color: #52606d; font-size: 0.9em; overflow-wrap: anywhere; }
         .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d9e1ec; border-radius: 10px; padding: 14px; margin: 0; overflow-wrap: anywhere; }
         .summary-table, table { width: 100%; border-collapse: collapse; }
-        .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; }
+        .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
         .summary-table th, .card th { width: 230px; background: #f8fafc; font-weight: 700; }
         .card { border: 1px solid #d9e1ec; border-radius: 12px; overflow: hidden; margin-top: 14px; background: #fff; }
-        .card h3 { margin: 0; padding: 14px 16px; background: #eef4fb; font-size: 16px; }
+        .card h3 { margin: 0; padding: 12px 16px; background: #eef4fb; font-size: 16px; }
+        .card-meta { color: #52606d; font-size: 0.85em; font-weight: 400; }
         .card table { margin: 0; }
         ul { margin: 0; padding-left: 22px; }
         li + li { margin-top: 8px; }
@@ -1175,6 +1164,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
           body { padding: 12px; }
           header, main { padding-left: 16px; padding-right: 16px; }
           .summary-table th, .card th { width: 40%; }
+          .quick-checks { grid-template-columns: 1fr; }
         }
         """
         .strip(),
@@ -1196,6 +1186,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
+        '<section><h2>Body Preview</h2><div class="content">'
+        + html_escape_text(summary["body_preview"])
+        + "</div></section>",
         '<section><h2>Sender IP Analysis</h2><table class="summary-table">',
         render_kv_rows(
             [
@@ -1205,22 +1198,10 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
-        '<section><h2>Body Preview</h2><div class="content">'
-        + html_escape_text(summary["body_preview"])
-        + "</div></section>",
         '<section><h2>Quick Checks</h2>',
         render_quick_checks(),
         "</section>",
-        '<section><h2>URLs Found</h2>',
-        render_urls(),
-        "</section>",
-        '<section><h2>Inline/Embedded Content</h2>',
-        render_content_cards(inline_content, "Inline Item"),
-        "</section>",
-        '<section><h2>Attachments Found</h2>',
-        render_content_cards(attachments, "Attachment"),
-        "</section>",
-        '<section><h2>Parsed Authentication Checks</h2><table class="summary-table">',
+        '<section><h2>Authentication Results</h2><table class="summary-table">',
         render_kv_rows(
             [
                 ("SPF", summary["spf_result"]),
@@ -1228,11 +1209,20 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 ("DMARC", summary["dmarc_result"]),
             ]
         ),
-        "</table></section>",
-        '<section><h2>Authentication-Results Header</h2>',
+        "</table>",
+        "<h3>Authentication-Results Header</h3>",
         render_empty_or_text_list(authentication_results),
         "</section>",
-        '<section><h2>Mail Route / Received Headers</h2>',
+        '<section><h2>URLs / Safe Links</h2>',
+        render_urls(),
+        "</section>",
+        '<section><h2>Attachments</h2>',
+        render_content_cards(attachments, "Attachment"),
+        "<h3>Inline / Embedded Content</h3>",
+        render_content_cards(inline_content, "Inline Item"),
+        "</section>",
+        '<section><h2>Technical Details</h2>',
+        "<h3>Mail Route / Received Headers</h3>",
         '<p class="note">These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.</p>',
         '<table class="summary-table">',
         render_kv_rows(
@@ -1246,8 +1236,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "</table>",
         '<p class="muted" style="margin-top: 16px;">Parsed hops (earliest observed to latest):</p>',
         render_received_routes(),
-        "</section>",
-        '<section><h2>Raw Received Headers</h2>',
+        "<h3>Raw Received Headers</h3>",
         render_empty_or_text_list(received_headers),
         "</section>",
         "</main></div></body></html>",
