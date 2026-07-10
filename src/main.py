@@ -201,25 +201,27 @@ def build_quick_checks(summary: Dict[str, object]) -> List[tuple[str, str, str]]
         external_sender_detail = "From or recipient domain not available."
     checks.append(("External sender", external_sender_status, external_sender_detail))
 
+    auth_protocols = ("spf", "dkim", "dmarc")
+    auth_results = {
+        protocol: str(summary.get(f"{protocol}_result", "")).strip().lower()
+        for protocol in auth_protocols
+    }
     failed_protocols = [
-        protocol.upper()
-        for protocol in ("spf", "dkim", "dmarc")
-        if str(summary.get(f"{protocol}_result", "")).strip().lower() == "fail"
+        protocol.upper() for protocol, result in auth_results.items() if result == "fail"
     ]
-    auth_results = [
-        str(summary.get(f"{protocol}_result", "")).strip().lower()
-        for protocol in ("spf", "dkim", "dmarc")
-    ]
-    auth_not_found = {"", "not found", "unknown", "missing", "none"}
+    auth_not_found = {"", "not found", "missing"}
     if failed_protocols:
         auth_status = "Failed"
-        auth_detail = ", ".join(failed_protocols) + " failure found."
-    elif all(result in auth_not_found for result in auth_results):
+    elif all(result in auth_not_found for result in auth_results.values()):
         auth_status = "Not found"
-        auth_detail = "No SPF, DKIM, or DMARC results found."
-    else:
+    elif all(result == "pass" for result in auth_results.values()):
         auth_status = "Passed"
-        auth_detail = "No SPF, DKIM, or DMARC failures found."
+    else:
+        auth_status = "Partial"
+    auth_detail = " | ".join(
+        f"{protocol.upper()}: {result or 'not found'}"
+        for protocol, result in auth_results.items()
+    )
     checks.append(("Authentication", auth_status, auth_detail))
 
     urls = summary.get("urls", [])

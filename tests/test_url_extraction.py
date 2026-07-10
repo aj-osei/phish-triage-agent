@@ -43,6 +43,45 @@ class URLExtractionTests(unittest.TestCase):
         self.assertEqual(checks["URLs"], ("Found", "7"))
         self.assertEqual(checks["Safe Links"], ("Found", "1"))
 
+    def test_quick_check_authentication_statuses(self) -> None:
+        cases = [
+            (
+                {"spf": "Not found", "dkim": "Not found", "dmarc": "Not found"},
+                "Not found",
+            ),
+            (
+                {"spf": "pass", "dkim": "fail", "dmarc": "pass"},
+                "Failed",
+            ),
+            (
+                {"spf": "pass", "dkim": "Not found", "dmarc": "pass"},
+                "Partial",
+            ),
+            (
+                {"spf": "pass", "dkim": "pass", "dmarc": "pass"},
+                "Passed",
+            ),
+            (
+                {"spf": "pass", "dkim": "unknown", "dmarc": "pass"},
+                "Partial",
+            ),
+        ]
+
+        for results, expected_status in cases:
+            with self.subTest(results=results):
+                summary = {f"{protocol}_result": result for protocol, result in results.items()}
+                checks = {
+                    label: (status, detail)
+                    for label, status, detail in main.build_quick_checks(summary)
+                }
+                status, detail = checks["Authentication"]
+                self.assertEqual(status, expected_status)
+                self.assertEqual(
+                    detail,
+                    f"SPF: {results['spf'].lower()} | DKIM: {results['dkim'].lower()} | "
+                    f"DMARC: {results['dmarc'].lower()}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
