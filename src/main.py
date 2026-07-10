@@ -10,6 +10,7 @@ from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
 from email.utils import parseaddr
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qs, unquote, urlparse
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
+URL_HTML_ATTRIBUTES = {"href", "src", "action", "data", "formaction"}
 WATCH_POLL_SECONDS = 3
 FILE_STABLE_WAIT_SECONDS = 2
 DOCUMENTATION_IP_NETWORKS = [
@@ -160,6 +162,91 @@ def parse_authentication_results(auth_values: List[str]) -> Dict[str, str]:
             results[key] = result.lower()
 
     return results
+
+
+def normalize_email_address(value: object) -> str:
+    """Return a lowercase mailbox address when one can be parsed."""
+    if not value or str(value).strip().lower() in {"not found", "(not provided)"}:
+        return ""
+
+    _, email_address = parseaddr(str(value))
+    return email_address.strip().lower()
+
+
+def get_email_domain(value: object) -> str:
+    """Return the normalized domain from a mailbox address, if available."""
+    email_address = normalize_email_address(value)
+    if "@" not in email_address:
+        return ""
+    return email_address.rsplit("@", 1)[1]
+
+
+def build_quick_checks(summary: Dict[str, object]) -> List[tuple[str, str, str]]:
+    """Build a compact deterministic review summary from parsed email data."""
+    checks: List[tuple[str, str, str]] = []
+    sender_domain = get_email_domain(summary.get("sender"))
+    recipient_domain = get_email_domain(summary.get("recipient"))
+
+    if sender_domain and recipient_domain:
+        is_external_sender = sender_domain != recipient_domain
+        external_sender_status = "Yes" if is_external_sender else "No"
+        external_sender_detail = (
+            "From domain does not match recipient domain. "
+            f"From: {sender_domain} | Recipient: {recipient_domain}"
+            if is_external_sender
+            else "From domain matches recipient domain."
+        )
+    else:
+        external_sender_status = "Not found"
+        external_sender_detail = "From or recipient domain not available."
+    checks.append(("External sender", external_sender_status, external_sender_detail))
+
+    failed_protocols = [
+        protocol.upper()
+        for protocol in ("spf", "dkim", "dmarc")
+        if str(summary.get(f"{protocol}_result", "")).strip().lower() == "fail"
+    ]
+    auth_results = [
+        str(summary.get(f"{protocol}_result", "")).strip().lower()
+        for protocol in ("spf", "dkim", "dmarc")
+    ]
+    auth_not_found = {"", "not found", "unknown", "missing", "none"}
+    if failed_protocols:
+        auth_status = "Failed"
+        auth_detail = ", ".join(failed_protocols) + " failure found."
+    elif all(result in auth_not_found for result in auth_results):
+        auth_status = "Not found"
+        auth_detail = "No SPF, DKIM, or DMARC results found."
+    else:
+        auth_status = "Passed"
+        auth_detail = "No SPF, DKIM, or DMARC failures found."
+    checks.append(("Authentication", auth_status, auth_detail))
+
+    urls = summary.get("urls", [])
+    url_count = len(urls)
+    checks.append(("URLs", "Found" if url_count else "Not found", str(url_count)))
+
+    safe_link_count = sum(1 for url in urls if is_microsoft_safe_link(str(url)))
+    checks.append(("Safe Links", "Found" if safe_link_count else "Not found", str(safe_link_count)))
+
+    attachments = summary.get("attachments", [])
+    attachment_count = len(attachments)
+    checks.append(("Attachments", "Found" if attachment_count else "Not found", str(attachment_count)))
+
+    sender_address = normalize_email_address(summary.get("sender"))
+    reply_to_address = normalize_email_address(summary.get("reply_to"))
+    if sender_address and reply_to_address and sender_address != reply_to_address:
+        reply_to_status = "Yes"
+        reply_to_detail = "Reply-To differs from From."
+    elif reply_to_address:
+        reply_to_status = "No"
+        reply_to_detail = "Reply-To matches From."
+    else:
+        reply_to_status = "Not found"
+        reply_to_detail = "Reply-To header not present."
+    checks.append(("Reply-To mismatch", reply_to_status, reply_to_detail))
+
+    return checks
 
 
 def normalize_header_whitespace(value: str) -> str:
@@ -412,6 +499,29 @@ def extract_plain_text_body(message) -> str:
     return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
 
 
+def extract_html_body(message) -> str:
+    """Collect HTML body content while ignoring true attachments."""
+    html_chunks: List[str] = []
+
+    parts = message.walk() if message.is_multipart() else [message]
+    for part in parts:
+        if part.is_multipart():
+            continue
+        if (part.get_content_disposition() or "").lower() == "attachment":
+            continue
+        if part.get_content_type() != "text/html":
+            continue
+
+        try:
+            payload = part.get_content()
+        except (LookupError, TypeError, ValueError):
+            continue
+        if isinstance(payload, str):
+            html_chunks.append(payload)
+
+    return "\n".join(html_chunks)
+
+
 def remove_likely_signature_text(body_text: str) -> str:
     """Trim common signature lines to keep preview text readable."""
     lines = [line.strip() for line in body_text.splitlines() if line.strip()]
@@ -459,6 +569,46 @@ def extract_urls(text: str) -> List[str]:
     found = URL_PATTERN.findall(text)
     unique_urls = list(dict.fromkeys(found))
     return unique_urls
+
+
+class HTMLURLExtractor(HTMLParser):
+    """Collect HTTP(S) URLs from HTML text and selected URL-bearing attributes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.urls: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, str | None]]) -> None:
+        for attribute, value in attrs:
+            if attribute.lower() in URL_HTML_ATTRIBUTES and value:
+                self.urls.extend(extract_urls(value))
+
+    def handle_startendtag(self, tag: str, attrs: List[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data: str) -> None:
+        self.urls.extend(extract_urls(data))
+
+
+def extract_urls_from_html(html_body: str) -> List[str]:
+    """Extract URLs from HTML body text and common URL-bearing attributes."""
+    if not html_body:
+        return []
+
+    parser = HTMLURLExtractor()
+    try:
+        parser.feed(html_body)
+        parser.close()
+    except (AssertionError, ValueError):
+        # Preserve a safe text-only fallback for malformed HTML.
+        return extract_urls(html_body)
+
+    return list(dict.fromkeys(parser.urls))
+
+
+def combine_unique_urls(*url_lists: List[str]) -> List[str]:
+    """Combine URL lists while preserving first-seen order."""
+    return list(dict.fromkeys(url for url_list in url_lists for url in url_list))
 
 
 def is_microsoft_safe_link(url: str) -> bool:
@@ -612,7 +762,8 @@ def build_summary_data(message) -> Dict[str, object]:
 
     body_text = extract_plain_text_body(message)
     preview = make_body_preview(body_text)
-    urls = extract_urls(body_text)
+    html_body = extract_html_body(message)
+    urls = combine_unique_urls(extract_urls(body_text), extract_urls_from_html(html_body))
     url_entries = build_url_entries(urls)
     content_parts = extract_content_parts(message)
     attachments = content_parts["attachments"]
@@ -629,7 +780,7 @@ def build_summary_data(message) -> Dict[str, object]:
     last_sending_relay_ip_note = get_last_sending_relay_ip_note(last_sending_relay_ip)
     auth_protocol_results = parse_authentication_results(authentication_results)
 
-    return {
+    summary = {
         "sender": sender,
         "recipient": recipient,
         "subject": subject,
@@ -655,6 +806,8 @@ def build_summary_data(message) -> Dict[str, object]:
         "dkim_result": auth_protocol_results["dkim"],
         "dmarc_result": auth_protocol_results["dmarc"],
     }
+    summary["quick_checks"] = build_quick_checks(summary)
+    return summary
 
 
 def print_summary(summary: Dict[str, object]) -> None:
@@ -699,6 +852,7 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
     url_entries = summary["url_entries"]
     attachments = summary["attachments"]
     inline_content = summary["inline_content"]
+    quick_checks = summary["quick_checks"]
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
@@ -724,9 +878,15 @@ def build_markdown_report(summary: Dict[str, object]) -> str:
         "",
         summary["body_preview"],
         "",
-        "## URLs Found",
+        "## Quick Checks",
         "",
     ]
+
+    for label, status, detail in quick_checks:
+        lines.append(f"- **{label}:** {status}")
+        if detail:
+            lines.append(f"  - {detail}")
+    lines.extend(["", "## URLs Found", ""])
 
     if url_entries:
         for index, entry in enumerate(url_entries, start=1):
@@ -869,6 +1029,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
     url_entries = summary["url_entries"]
     attachments = summary["attachments"]
     inline_content = summary["inline_content"]
+    quick_checks = summary["quick_checks"]
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
@@ -891,6 +1052,21 @@ def build_html_report(summary: Dict[str, object]) -> str:
 
         items = "\n".join(f"<li>{html_escape_text(value)}</li>" for value in values)
         return f"<ul>{items}</ul>"
+
+    def render_quick_checks() -> str:
+        rows = []
+        for label, status, detail in quick_checks:
+            value = "<strong>" + html_escape_text(status) + "</strong>"
+            if detail:
+                value += '<br><span class="check-detail">' + html_escape_text(detail) + "</span>"
+            rows.append(
+                "<tr><th>"
+                + html_escape_text(label)
+                + "</th><td>"
+                + value
+                + "</td></tr>"
+            )
+        return '<table class="summary-table">' + "\n".join(rows) + "</table>"
 
     def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:
         if not items:
@@ -982,6 +1158,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         section { margin-bottom: 28px; }
         section h2 { margin: 0 0 14px; font-size: 20px; border-bottom: 2px solid #d9e1ec; padding-bottom: 8px; }
         .muted { color: #52606d; }
+        .check-detail { color: #52606d; font-size: 0.92em; }
         .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d9e1ec; border-radius: 10px; padding: 14px; margin: 0; overflow-wrap: anywhere; }
         .summary-table, table { width: 100%; border-collapse: collapse; }
         .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; }
@@ -1029,6 +1206,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
         '<section><h2>Body Preview</h2><div class="content">'
         + html_escape_text(summary["body_preview"])
         + "</div></section>",
+        '<section><h2>Quick Checks</h2>',
+        render_quick_checks(),
+        "</section>",
         '<section><h2>URLs Found</h2>',
         render_urls(),
         "</section>",
