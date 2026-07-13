@@ -82,6 +82,32 @@ class URLExtractionTests(unittest.TestCase):
                     f"DMARC: {results['dmarc'].lower()}",
                 )
 
+    def test_quick_check_return_path_statuses(self) -> None:
+        cases = [
+            ("sender@example.com", "Not found", "Not found"),
+            ("sender@example.com", "sender@example.com", "Matches From"),
+            ("sender@example.com", "bounce@example.com", "Matches From"),
+            ("sender@example.com", "bounce@example.net", "Differs from From"),
+            ("Not found", "bounce@example.net", "From not found"),
+        ]
+
+        for sender, return_path, expected_status in cases:
+            with self.subTest(sender=sender, return_path=return_path):
+                checks = {
+                    label: (status, detail)
+                    for label, status, detail in main.build_quick_checks(
+                        {"sender": sender, "return_path": return_path}
+                    )
+                }
+                status, detail = checks["Return-Path"]
+                self.assertEqual(status, expected_status)
+                self.assertEqual(
+                    detail,
+                    "From: "
+                    f"{main.normalize_email_address(sender) or 'not found'} | Return-Path: "
+                    f"{main.normalize_email_address(return_path) or 'not found'}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

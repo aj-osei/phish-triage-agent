@@ -201,6 +201,25 @@ def build_quick_checks(summary: Dict[str, object]) -> List[tuple[str, str, str]]
         external_sender_detail = "From or recipient domain not available."
     checks.append(("External sender", external_sender_status, external_sender_detail))
 
+    sender_address = normalize_email_address(summary.get("sender"))
+    return_path_address = normalize_email_address(summary.get("return_path"))
+    if not return_path_address:
+        return_path_status = "Not found"
+    elif not sender_address:
+        return_path_status = "From not found"
+    elif (
+        return_path_address == sender_address
+        or get_email_domain(summary.get("return_path")) == sender_domain
+    ):
+        return_path_status = "Matches From"
+    else:
+        return_path_status = "Differs from From"
+    return_path_detail = (
+        f"From: {sender_address or 'not found'} | "
+        f"Return-Path: {return_path_address or 'not found'}"
+    )
+    checks.append(("Return-Path", return_path_status, return_path_detail))
+
     auth_protocols = ("spf", "dkim", "dmarc")
     auth_results = {
         protocol: str(summary.get(f"{protocol}_result", "")).strip().lower()
@@ -235,7 +254,6 @@ def build_quick_checks(summary: Dict[str, object]) -> List[tuple[str, str, str]]
     attachment_count = len(attachments)
     checks.append(("Attachments", "Found" if attachment_count else "Not found", str(attachment_count)))
 
-    sender_address = normalize_email_address(summary.get("sender"))
     reply_to_address = normalize_email_address(summary.get("reply_to"))
     if sender_address and reply_to_address and sender_address != reply_to_address:
         reply_to_status = "Yes"
