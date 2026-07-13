@@ -1,30 +1,105 @@
-# Phish Triage Agent
+# Phish Pharm / Phishing Triage Agent
 
-A Python MVP for helping automate phishing email triage.
+## Project Overview
 
-## Goal
+Phish Pharm is a Python tool that parses `.eml` phishing-email samples and creates Markdown and HTML triage reports. It is designed to help SOC analysts review email evidence more quickly by collecting common message details in one place.
 
-The goal is to safely parse `.eml` files, extract useful email details, and generate a triage report for analyst review.
+The tool supports analyst review; it does **not** make a final automated malicious or safe verdict.
 
-## MVP Plan
+## Current Features
 
-### Phase 1: Manual Parser
-- Read one safe test `.eml` file
-- Extract sender, recipient, subject, date, and body preview
-- Extract URLs without opening them
-- Print the results in the terminal
+- Parses `.eml` email files.
+- Extracts sender, recipient, subject, and date fields.
+- Shows a body preview.
+- Extracts URLs from plain-text and HTML email content.
+- Detects Microsoft Safe Links.
+- Extracts links from HTML `href`, `src`, `action`, `data`, and `formaction` attributes.
+- Summarizes attachments and inline/embedded content.
+- Shows SPF, DKIM, and DMARC authentication results.
+- Adds compact Quick Checks for:
+  - External sender
+  - Authentication status
+  - URL count
+  - Safe Links count
+  - Attachment count
+  - Reply-To mismatch
+  - Return-Path comparison
+- Generates both Markdown and HTML reports.
 
-### Phase 2: Report Generator
-- Save the extracted details into a Markdown report
+## How to Use
 
-### Phase 3: Folder Watcher
-- Watch a folder for new `.eml` files
-- Automatically parse new files
+### Prerequisites
 
-### Safety Notes
+Use Python 3.10 or later. The current project uses the Python standard library and does not include a `requirements.txt` file.
 
-- Do not use real phishing emails in GitHub
-- Do not commit internal screenshots, tickets, API keys, or company data
-- Do not render HTML
-- Do not open links automatically
-- Real samples should only be tested inside the VM
+Creating a virtual environment is optional, but recommended:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+If a future version of the project includes `requirements.txt`, install it with:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+### Run a Sample
+
+From the repository root, run the parser against a specific `.eml` file:
+
+```powershell
+python src/main.py "samples\test_email.eml"
+```
+
+You can also run the default sample (`samples/test_email.eml`) with no argument:
+
+```powershell
+python src/main.py
+```
+
+Reports are saved in the `reports/` folder using the input email filename, for example:
+
+- `reports/test_email_report.md`
+- `reports/test_email_report.html`
+
+### Watch a Folder
+
+To monitor a folder for new `.eml` files, use the supported watch-mode command:
+
+```powershell
+python src/main.py --watch watch_folder
+```
+
+## Running Tests
+
+Run the unit tests:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Run a syntax check:
+
+```powershell
+python -m py_compile src/main.py tests/test_url_extraction.py
+```
+
+## Safety Notes
+
+- The tool parses email files as text and metadata.
+- It does not open URLs.
+- It does not render the email's HTML content while parsing.
+- It does not send URLs or attachments to external services by default.
+- Analysts should still review all report results manually.
+- Do not commit real phishing messages, internal tickets, credentials, or other sensitive data to source control.
+
+## Project Status / Next Steps
+
+Possible future improvements include:
+
+- Improve handling for legitimate Return-Path subdomains and third-party bounce domains.
+- Add collapsible HTML sections for long URL lists.
+- Add more sample emails and tests.
+- Add optional reputation checks later, if approved.
