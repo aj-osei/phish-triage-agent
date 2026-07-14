@@ -142,6 +142,25 @@ class URLExtractionTests(unittest.TestCase):
         self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
         self.assertEqual(options["report_format"], "html")
 
+    def test_paired_report_paths_use_the_same_available_suffix(self) -> None:
+        existing_names = {
+            "suspicious_report.md",
+            "suspicious_report.html",
+            "suspicious_report_1.md",
+        }
+        with patch.object(
+            Path,
+            "exists",
+            autospec=True,
+            side_effect=lambda path: path.name in existing_names,
+        ):
+            markdown_path, html_path = main.resolve_unique_report_paths(
+                Path("suspicious.eml"), Path("reports"), "both"
+            )
+
+        self.assertEqual(markdown_path.name, "suspicious_report_2.md")
+        self.assertEqual(html_path.name, "suspicious_report_2.html")
+
 
 if __name__ == "__main__":
     unittest.main()

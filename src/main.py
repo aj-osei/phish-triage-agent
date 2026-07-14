@@ -97,6 +97,30 @@ def resolve_html_report_path(eml_path: Path, output_folder: Path | None = None) 
     return (output_folder or resolve_default_output_folder()) / report_filename
 
 
+def resolve_unique_report_paths(
+    eml_path: Path, output_folder: Path, report_format: str
+) -> tuple[Path | None, Path | None]:
+    """Return unused report paths, keeping paired Markdown and HTML suffixes aligned."""
+    markdown_requested = report_format in {"md", "both"}
+    html_requested = report_format in {"html", "both"}
+    if not markdown_requested and not html_requested:
+        raise ValueError("Report format must be md, html, or both.")
+
+    suffix_number = 0
+    while True:
+        suffix = "" if suffix_number == 0 else f"_{suffix_number}"
+        markdown_path = (
+            output_folder / f"{eml_path.stem}_report{suffix}.md" if markdown_requested else None
+        )
+        html_path = (
+            output_folder / f"{eml_path.stem}_report{suffix}.html" if html_requested else None
+        )
+        requested_paths = [path for path in (markdown_path, html_path) if path is not None]
+        if not any(path.exists() for path in requested_paths):
+            return markdown_path, html_path
+        suffix_number += 1
+
+
 def parse_email(raw_email: bytes):
     """Parse the raw bytes into an EmailMessage object."""
     return BytesParser(policy=policy.default).parsebytes(raw_email)
@@ -1306,13 +1330,14 @@ def process_eml_file(
         raw_email = read_eml_bytes(eml_path)
         message = parse_email(raw_email)
         summary = build_summary_data(message)
+        report_path, html_report_path = resolve_unique_report_paths(
+            eml_path, output_folder, report_format
+        )
 
-        if report_format in {"md", "both"}:
-            report_path = resolve_report_path(eml_path, output_folder)
+        if report_path:
             write_markdown_report(report_path, build_markdown_report(summary))
             result["markdown_report"] = report_path
-        if report_format in {"html", "both"}:
-            html_report_path = resolve_html_report_path(eml_path, output_folder)
+        if html_report_path:
             write_html_report(html_report_path, build_html_report(summary))
             result["html_report"] = html_report_path
     except (OSError, ValueError, LookupError) as error:

@@ -59,7 +59,7 @@ python src/main.py "C:\Users\ajosei\Downloads\phish_emails" --output reports
 python src/main.py samples/test_email.eml --format html
 ```
 
-The `--format` option accepts `md`, `html`, or `both` (the default). Use `--output` to choose a report folder; it is created automatically when needed. Without `--output`, reports are written to `reports/`.
+The `--format` option accepts `md`, `html`, or `both` (the default). Use `--output` to choose a report folder; it is created automatically when needed. Without `--output`, reports are written to `reports/`. Existing reports are not overwritten: duplicate names receive numeric suffixes such as `_1` and `_2`.
 
 You can also run the default sample (`samples/test_email.eml`) with no argument:
 
