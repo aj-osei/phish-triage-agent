@@ -1,7 +1,10 @@
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from email.message import EmailMessage
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -107,6 +110,37 @@ class URLExtractionTests(unittest.TestCase):
                     f"{main.normalize_email_address(sender) or 'not found'} | Return-Path: "
                     f"{main.normalize_email_address(return_path) or 'not found'}",
                 )
+
+    def test_manual_folder_processing_honors_output_and_format(self) -> None:
+        input_folder = Path("samples").resolve()
+        output_folder = Path("custom_reports").resolve()
+        eml_file = input_folder / "test_email.eml"
+        result = {
+            "input_file": eml_file,
+            "markdown_report": output_folder / "test_email_report.md",
+            "html_report": None,
+            "error": None,
+        }
+
+        with (
+            patch.object(main, "list_eml_files", return_value=[eml_file]),
+            patch.object(main, "list_non_eml_files", return_value=[input_folder / "notes.txt"]),
+            patch.object(main, "process_eml_file", return_value=result) as process_file,
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                main.process_input_path(input_folder, output_folder, "md")
+
+        process_file.assert_called_once_with(eml_file, output_folder, "md")
+        self.assertIn("Skipped non-.eml file: notes.txt", console_output.getvalue())
+        self.assertIn("Markdown report:", console_output.getvalue())
+
+    def test_cli_parses_file_or_folder_options(self) -> None:
+        options = main.parse_cli_args(["samples", "--output", "custom_reports", "--format", "html"])
+
+        self.assertEqual(options["input_path"], Path("samples").resolve())
+        self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
+        self.assertEqual(options["report_format"], "html")
 
 
 if __name__ == "__main__":

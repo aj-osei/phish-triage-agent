@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import html
 import re
 import sys
 import hashlib
-import time
 import ipaddress
 from email import policy
 from email.header import decode_header
@@ -19,8 +19,6 @@ from urllib.parse import parse_qs, unquote, urlparse
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
 URL_HTML_ATTRIBUTES = {"href", "src", "action", "data", "formaction"}
-WATCH_POLL_SECONDS = 3
-FILE_STABLE_WAIT_SECONDS = 2
 DOCUMENTATION_IP_NETWORKS = [
     ipaddress.ip_network("192.0.2.0/24"),
     ipaddress.ip_network("198.51.100.0/24"),
@@ -45,30 +43,41 @@ def resolve_default_eml_path() -> Path:
     return project_root / "samples" / "test_email.eml"
 
 
-def resolve_eml_path(eml_path_arg: str | None) -> Path:
-    """Return an .eml path from CLI input or use the default sample."""
-    if eml_path_arg:
-        return Path(eml_path_arg).expanduser().resolve()
-    return resolve_default_eml_path()
+def resolve_default_output_folder() -> Path:
+    """Return the default report output folder."""
+    project_root = Path(__file__).resolve().parent.parent
+    return project_root / "reports"
 
 
-def parse_cli_args() -> Dict[str, object]:
-    """Parse command-line arguments for single-file or watch mode."""
-    args = sys.argv[1:]
-
-    if not args:
-        return {"mode": "single", "eml_path": resolve_default_eml_path()}
-
-    if args[0] == "--watch":
-        if len(args) != 2:
-            raise ValueError("Usage: python src/main.py --watch <watch_folder>")
-        watch_folder = Path(args[1]).expanduser().resolve()
-        return {"mode": "watch", "watch_folder": watch_folder}
-
-    if len(args) != 1:
-        raise ValueError("Usage: python src/main.py [path/to/file.eml]")
-
-    return {"mode": "single", "eml_path": resolve_eml_path(args[0])}
+def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
+    """Parse manual file-or-folder triage options without processing input."""
+    parser = argparse.ArgumentParser(
+        description="Generate local phishing-triage reports from an .eml file or folder."
+    )
+    parser.add_argument(
+        "input_path",
+        nargs="?",
+        default=str(resolve_default_eml_path()),
+        help="Path to one .eml file or a folder containing .eml files.",
+    )
+    parser.add_argument(
+        "--output",
+        default=str(resolve_default_output_folder()),
+        help="Folder where reports are written (default: reports/).",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("md", "html", "both"),
+        default="both",
+        dest="report_format",
+        help="Report format to generate (default: both).",
+    )
+    parsed_args = parser.parse_args(args)
+    return {
+        "input_path": Path(parsed_args.input_path).expanduser().resolve(),
+        "output_folder": Path(parsed_args.output).expanduser().resolve(),
+        "report_format": parsed_args.report_format,
+    }
 
 
 def read_eml_bytes(eml_path: Path) -> bytes:
@@ -76,18 +85,16 @@ def read_eml_bytes(eml_path: Path) -> bytes:
     return eml_path.read_bytes()
 
 
-def resolve_report_path(eml_path: Path) -> Path:
-    """Return a report path in reports/ based on the input .eml filename."""
-    project_root = Path(__file__).resolve().parent.parent
+def resolve_report_path(eml_path: Path, output_folder: Path | None = None) -> Path:
+    """Return a Markdown report path based on the input .eml filename."""
     report_filename = f"{eml_path.stem}_report.md"
-    return project_root / "reports" / report_filename
+    return (output_folder or resolve_default_output_folder()) / report_filename
 
 
-def resolve_html_report_path(eml_path: Path) -> Path:
-    """Return an HTML report path in reports/ based on the input .eml filename."""
-    project_root = Path(__file__).resolve().parent.parent
+def resolve_html_report_path(eml_path: Path, output_folder: Path | None = None) -> Path:
+    """Return an HTML report path based on the input .eml filename."""
     report_filename = f"{eml_path.stem}_report.html"
-    return project_root / "reports" / report_filename
+    return (output_folder or resolve_default_output_folder()) / report_filename
 
 
 def parse_email(raw_email: bytes):
@@ -1275,44 +1282,57 @@ def write_html_report(report_path: Path, report_content: str) -> None:
     report_path.write_text(report_content, encoding="utf-8")
 
 
-def process_eml_file(eml_path: Path) -> None:
-    """Parse one .eml file and write its Markdown triage report."""
-    report_path = resolve_report_path(eml_path)
-    html_report_path = resolve_html_report_path(eml_path)
+def process_eml_file(
+    eml_path: Path,
+    output_folder: Path | None = None,
+    report_format: str = "both",
+) -> Dict[str, object]:
+    """Parse one .eml file and return generated report paths or a local error."""
+    result: Dict[str, object] = {
+        "input_file": eml_path,
+        "markdown_report": None,
+        "html_report": None,
+        "error": None,
+    }
+    if not eml_path.exists() or not eml_path.is_file():
+        result["error"] = "Input file was not found."
+        return result
+    if eml_path.suffix.lower() != ".eml":
+        result["error"] = "Input file is not an .eml file."
+        return result
 
-    if not eml_path.exists():
-        print(f"Error: file not found: {eml_path}")
+    output_folder = output_folder or resolve_default_output_folder()
+    try:
+        raw_email = read_eml_bytes(eml_path)
+        message = parse_email(raw_email)
+        summary = build_summary_data(message)
+
+        if report_format in {"md", "both"}:
+            report_path = resolve_report_path(eml_path, output_folder)
+            write_markdown_report(report_path, build_markdown_report(summary))
+            result["markdown_report"] = report_path
+        if report_format in {"html", "both"}:
+            html_report_path = resolve_html_report_path(eml_path, output_folder)
+            write_html_report(html_report_path, build_html_report(summary))
+            result["html_report"] = html_report_path
+    except (OSError, ValueError, LookupError) as error:
+        result["error"] = str(error)
+
+    return result
+
+
+def print_process_result(result: Dict[str, object]) -> None:
+    """Print a compact local processing summary for one input email."""
+    input_file = result["input_file"]
+    if result["error"]:
+        print(f"Error processing {input_file}: {result['error']}")
         return
 
-    raw_email = read_eml_bytes(eml_path)
-    message = parse_email(raw_email)
-    summary = build_summary_data(message)
-
-    print_summary(summary)
-
-    report_content = build_markdown_report(summary)
-    html_report_content = build_html_report(summary)
-    write_markdown_report(report_path, report_content)
-    write_html_report(html_report_path, html_report_content)
-    print(f"\nMarkdown report saved to: {report_path}")
-    print(f"HTML report saved to: {html_report_path}")
-
-
-def is_stable_for_processing(file_path: Path, wait_seconds: int = FILE_STABLE_WAIT_SECONDS) -> bool:
-    """Check if file size is unchanged after a short wait."""
-    try:
-        first_size = file_path.stat().st_size
-    except OSError:
-        return False
-
-    time.sleep(wait_seconds)
-
-    try:
-        second_size = file_path.stat().st_size
-    except OSError:
-        return False
-
-    return first_size == second_size
+    print(f"Processed: {input_file}")
+    if result["markdown_report"]:
+        print(f"  Markdown report: {result['markdown_report']}")
+    if result["html_report"]:
+        print(f"  HTML report: {result['html_report']}")
 
 
 def list_eml_files(folder_path: Path) -> List[Path]:
@@ -1323,60 +1343,54 @@ def list_eml_files(folder_path: Path) -> List[Path]:
     return sorted(eml_files, key=lambda path: path.name.lower())
 
 
-def run_watch_mode(watch_folder: Path) -> None:
-    """Watch a folder for new .eml files and process each one once."""
-    if not watch_folder.exists() or not watch_folder.is_dir():
-        print(f"Error: watch folder not found: {watch_folder}")
-        sys.exit(1)
+def list_non_eml_files(folder_path: Path) -> List[Path]:
+    """Return regular non-.eml files in a folder for concise skip reporting."""
+    return sorted(
+        [
+            path
+            for path in folder_path.iterdir()
+            if path.is_file() and path.suffix.lower() != ".eml"
+        ],
+        key=lambda path: path.name.lower(),
+    )
 
-    processed_files = {path.resolve() for path in list_eml_files(watch_folder)}
-    print(f"Watching folder for new .eml files: {watch_folder}")
-    print("Press Ctrl+C to stop.")
 
-    try:
-        while True:
-            for eml_file in list_eml_files(watch_folder):
-                eml_file = eml_file.resolve()
+def process_input_path(input_path: Path, output_folder: Path, report_format: str) -> None:
+    """Process one .eml file or every .eml file in one non-recursive folder."""
+    if not input_path.exists():
+        print(f"Error: input path not found: {input_path}")
+        return
 
-                if eml_file in processed_files:
-                    continue
+    if input_path.is_file():
+        print_process_result(process_eml_file(input_path, output_folder, report_format))
+        return
 
-                print(f"\nDetected new .eml file: {eml_file}")
+    if not input_path.is_dir():
+        print(f"Error: input path is not a file or folder: {input_path}")
+        return
 
-                if not is_stable_for_processing(eml_file):
-                    print("File still changing. Will try again on next scan.")
-                    continue
+    eml_files = list_eml_files(input_path)
+    skipped_files = list_non_eml_files(input_path)
+    print(f"Processing folder: {input_path}")
+    for skipped_file in skipped_files:
+        print(f"Skipped non-.eml file: {skipped_file.name}")
 
-                try:
-                    process_eml_file(eml_file)
-                except Exception as error:
-                    print(f"Error processing {eml_file}: {error}")
+    if not eml_files:
+        print("No .eml files found in the folder.")
+        return
 
-                processed_files.add(eml_file)
-
-            time.sleep(WATCH_POLL_SECONDS)
-    except KeyboardInterrupt:
-        print("\nStopped watch mode.")
+    for eml_file in eml_files:
+        print_process_result(process_eml_file(eml_file, output_folder, report_format))
 
 
 def main() -> None:
-    """Entry point for single-file parsing or folder watch mode."""
-    try:
-        cli_options = parse_cli_args()
-    except ValueError as error:
-        print(error)
-        sys.exit(1)
-
-    if cli_options["mode"] == "watch":
-        run_watch_mode(cli_options["watch_folder"])
-        return
-
-    eml_path = cli_options["eml_path"]
-    if not eml_path.exists():
-        print(f"Error: file not found: {eml_path}")
-        sys.exit(1)
-
-    process_eml_file(eml_path)
+    """Entry point for manual file or folder triage."""
+    cli_options = parse_cli_args()
+    process_input_path(
+        cli_options["input_path"],
+        cli_options["output_folder"],
+        cli_options["report_format"],
+    )
 
 
 if __name__ == "__main__":

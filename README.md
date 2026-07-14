@@ -45,13 +45,21 @@ If a future version of the project includes `requirements.txt`, install it with:
 python -m pip install -r requirements.txt
 ```
 
-### Run a Sample
+### Run an Email File or Folder
 
-From the repository root, run the parser against a specific `.eml` file:
+The `samples/` folder is for testing and demonstration. In real use, pass the path to any downloaded `.eml` file or a folder containing `.eml` files.
+
+From the repository root:
 
 ```powershell
-python src/main.py "samples\test_email.eml"
+python src/main.py samples/test_email.eml
+python src/main.py samples/
+python src/main.py "C:\Users\ajosei\Downloads\suspicious_email.eml"
+python src/main.py "C:\Users\ajosei\Downloads\phish_emails" --output reports
+python src/main.py samples/test_email.eml --format html
 ```
+
+The `--format` option accepts `md`, `html`, or `both` (the default). Use `--output` to choose a report folder; it is created automatically when needed. Without `--output`, reports are written to `reports/`.
 
 You can also run the default sample (`samples/test_email.eml`) with no argument:
 
@@ -59,18 +67,10 @@ You can also run the default sample (`samples/test_email.eml`) with no argument:
 python src/main.py
 ```
 
-Reports are saved in the `reports/` folder using the input email filename, for example:
+Reports use the input email filename, for example:
 
 - `reports/test_email_report.md`
 - `reports/test_email_report.html`
-
-### Watch a Folder
-
-To monitor a folder for new `.eml` files, use the supported watch-mode command:
-
-```powershell
-python src/main.py --watch watch_folder
-```
 
 ## Running Tests
 
@@ -102,4 +102,5 @@ Possible future improvements include:
 - Improve handling for legitimate Return-Path subdomains and third-party bounce domains.
 - Add collapsible HTML sections for long URL lists.
 - Add more sample emails and tests.
+- Add an optional watch-folder workflow for drag-and-drop `.eml` processing.
 - Add optional reputation checks later, if approved.
