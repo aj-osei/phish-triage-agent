@@ -72,6 +72,25 @@ Reports use the input email filename, for example:
 - `reports/test_email_report.md`
 - `reports/test_email_report.html`
 
+### Watch Folder Mode
+
+Create an empty folder for incoming email files, then start the watcher:
+
+```powershell
+mkdir inbox
+python src/main.py --watch inbox --output reports
+```
+
+Drop or copy new `.eml` files into `inbox/`. The tool waits for each file to finish copying, then generates reports in `reports/`. The watcher supports the same format choices:
+
+```powershell
+python src/main.py --watch inbox --output reports --format html
+python src/main.py --watch inbox --output reports --format md
+python src/main.py --watch inbox --output reports --format both
+```
+
+The watcher only checks that one folder (not subfolders). Stop it with `Ctrl+C`.
+
 ## Running Tests
 
 Run the unit tests:

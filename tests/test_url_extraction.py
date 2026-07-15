@@ -138,9 +138,18 @@ class URLExtractionTests(unittest.TestCase):
     def test_cli_parses_file_or_folder_options(self) -> None:
         options = main.parse_cli_args(["samples", "--output", "custom_reports", "--format", "html"])
 
+        self.assertEqual(options["mode"], "manual")
         self.assertEqual(options["input_path"], Path("samples").resolve())
         self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
         self.assertEqual(options["report_format"], "html")
+
+    def test_cli_parses_watch_options(self) -> None:
+        options = main.parse_cli_args(["--watch", "samples", "--output", "custom_reports"])
+
+        self.assertEqual(options["mode"], "watch")
+        self.assertEqual(options["watch_folder"], Path("samples").resolve())
+        self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
+        self.assertEqual(options["report_format"], "both")
 
     def test_paired_report_paths_use_the_same_available_suffix(self) -> None:
         existing_names = {
@@ -160,6 +169,55 @@ class URLExtractionTests(unittest.TestCase):
 
         self.assertEqual(markdown_path.name, "suspicious_report_2.md")
         self.assertEqual(html_path.name, "suspicious_report_2.html")
+
+    def test_watch_mode_processes_a_new_stable_email_and_stops_cleanly(self) -> None:
+        watch_folder = Path("samples").resolve()
+        existing_file = watch_folder / "existing.eml"
+        new_file = watch_folder / "new_email.eml"
+        output_folder = Path("custom_reports").resolve()
+        first_result = {
+            "input_file": new_file,
+            "markdown_report": output_folder / "new_email_report_1.md",
+            "html_report": output_folder / "new_email_report_1.html",
+            "error": None,
+        }
+        second_result = {
+            "input_file": new_file,
+            "markdown_report": output_folder / "new_email_report_2.md",
+            "html_report": output_folder / "new_email_report_2.html",
+            "error": None,
+        }
+
+        with (
+            patch.object(
+                main,
+                "list_eml_files",
+                side_effect=[
+                    [existing_file],
+                    [existing_file, new_file],
+                    [existing_file],
+                    [existing_file, new_file],
+                ],
+            ),
+            patch.object(
+                main,
+                "get_file_signature",
+                side_effect=[(1, 1), (1, 1), (2, 2), (2, 2), (1, 1), (1, 1), (2, 2), (2, 2)],
+            ),
+            patch.object(main, "is_file_size_stable", return_value=True),
+            patch.object(main, "process_eml_file", side_effect=[first_result, second_result]) as process_file,
+            patch.object(main.time, "sleep", side_effect=[None, None, KeyboardInterrupt]),
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                main.run_watch_mode(watch_folder, output_folder, "both")
+
+        self.assertEqual(process_file.call_count, 2)
+        process_file.assert_called_with(new_file.resolve(), output_folder, "both")
+        self.assertIn("Watching folder:", console_output.getvalue())
+        self.assertIn("New .eml file detected: new_email.eml", console_output.getvalue())
+        self.assertIn("new_email_report_2.md", console_output.getvalue())
+        self.assertIn("Stopped watching folder.", console_output.getvalue())
 
 
 if __name__ == "__main__":

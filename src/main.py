@@ -6,6 +6,7 @@ import re
 import sys
 import hashlib
 import ipaddress
+import time
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
@@ -19,6 +20,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
 URL_HTML_ATTRIBUTES = {"href", "src", "action", "data", "formaction"}
+WATCH_POLL_SECONDS = 2
+FILE_STABLE_WAIT_SECONDS = 1
 DOCUMENTATION_IP_NETWORKS = [
     ipaddress.ip_network("192.0.2.0/24"),
     ipaddress.ip_network("198.51.100.0/24"),
@@ -50,15 +53,19 @@ def resolve_default_output_folder() -> Path:
 
 
 def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
-    """Parse manual file-or-folder triage options without processing input."""
+    """Parse manual or watch-mode triage options without processing input."""
     parser = argparse.ArgumentParser(
         description="Generate local phishing-triage reports from an .eml file or folder."
     )
     parser.add_argument(
         "input_path",
         nargs="?",
-        default=str(resolve_default_eml_path()),
         help="Path to one .eml file or a folder containing .eml files.",
+    )
+    parser.add_argument(
+        "--watch",
+        metavar="FOLDER",
+        help="Watch one folder for newly added .eml files.",
     )
     parser.add_argument(
         "--output",
@@ -73,9 +80,27 @@ def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
         help="Report format to generate (default: both).",
     )
     parsed_args = parser.parse_args(args)
+    if parsed_args.watch and parsed_args.input_path:
+        parser.error("Use either an input path or --watch <folder>, not both.")
+
+    output_folder = Path(parsed_args.output).expanduser().resolve()
+    if parsed_args.watch:
+        watch_folder = Path(parsed_args.watch).expanduser().resolve()
+        if not watch_folder.exists() or not watch_folder.is_dir():
+            parser.error(f"Watch folder is not a valid directory: {watch_folder}")
+        return {
+            "mode": "watch",
+            "watch_folder": watch_folder,
+            "output_folder": output_folder,
+            "report_format": parsed_args.report_format,
+        }
+
     return {
-        "input_path": Path(parsed_args.input_path).expanduser().resolve(),
-        "output_folder": Path(parsed_args.output).expanduser().resolve(),
+        "mode": "manual",
+        "input_path": Path(
+            parsed_args.input_path or resolve_default_eml_path()
+        ).expanduser().resolve(),
+        "output_folder": output_folder,
         "report_format": parsed_args.report_format,
     }
 
@@ -1408,9 +1433,69 @@ def process_input_path(input_path: Path, output_folder: Path, report_format: str
         print_process_result(process_eml_file(eml_file, output_folder, report_format))
 
 
+def is_file_size_stable(
+    file_path: Path, wait_seconds: int = FILE_STABLE_WAIT_SECONDS
+) -> bool:
+    """Check that a file has the same size across two polling checks."""
+    try:
+        initial_size = file_path.stat().st_size
+        time.sleep(wait_seconds)
+        return file_path.stat().st_size == initial_size
+    except OSError:
+        return False
+
+
+def get_file_signature(file_path: Path) -> tuple[int, int, int] | None:
+    """Return a lightweight size, modified-time, and creation/change-time signature."""
+    try:
+        stat_result = file_path.stat()
+    except OSError:
+        return None
+    return stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ctime_ns
+
+
+def run_watch_mode(watch_folder: Path, output_folder: Path, report_format: str) -> None:
+    """Poll one folder and process newly added stable .eml files."""
+    processed_files = {
+        path.resolve(): get_file_signature(path.resolve()) for path in list_eml_files(watch_folder)
+    }
+    print(f"Watching folder: {watch_folder}")
+    print(f"Reports will be saved to: {output_folder}")
+    print("Drop .eml files into the folder. Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            eml_files = [path.resolve() for path in list_eml_files(watch_folder)]
+            current_files = set(eml_files)
+            processed_files = {
+                path: signature for path, signature in processed_files.items() if path in current_files
+            }
+            for eml_file in eml_files:
+                file_signature = get_file_signature(eml_file)
+                if file_signature is None or processed_files.get(eml_file) == file_signature:
+                    continue
+                if not is_file_size_stable(eml_file):
+                    print(f"Waiting for file copy to finish: {eml_file.name}")
+                    continue
+
+                print(f"New .eml file detected: {eml_file.name}")
+                print_process_result(process_eml_file(eml_file, output_folder, report_format))
+                processed_files[eml_file] = get_file_signature(eml_file)
+            time.sleep(WATCH_POLL_SECONDS)
+    except KeyboardInterrupt:
+        print("\nStopped watching folder.")
+
+
 def main() -> None:
-    """Entry point for manual file or folder triage."""
+    """Entry point for manual file/folder triage or watch mode."""
     cli_options = parse_cli_args()
+    if cli_options["mode"] == "watch":
+        run_watch_mode(
+            cli_options["watch_folder"],
+            cli_options["output_folder"],
+            cli_options["report_format"],
+        )
+        return
     process_input_path(
         cli_options["input_path"],
         cli_options["output_folder"],
