@@ -1109,12 +1109,28 @@ def build_html_report(summary: Dict[str, object]) -> str:
             return '<p class="muted">None</p>'
 
         items = "\n".join(f"<li>{html_escape_text(value)}</li>" for value in values)
-        return f"<ul>{items}</ul>"
+        return f'<ul class="technical-list">{items}</ul>'
+
+    def quick_check_badge_class(label: object, status: object) -> str:
+        """Return a display-only style for compact Quick Check status badges."""
+        if (
+            (label == "Authentication" and status == "Failed")
+            or (label == "Reply-To mismatch" and status == "Yes")
+            or (label == "Return-Path" and status == "Differs from From")
+        ):
+            return "badge-notice"
+        return "badge-neutral"
 
     def render_quick_checks() -> str:
         cards = []
         for label, status, detail in quick_checks:
-            value = '<span class="check-status">' + html_escape_text(status) + "</span>"
+            value = (
+                '<span class="check-status badge '
+                + quick_check_badge_class(label, status)
+                + '">'
+                + html_escape_text(status)
+                + "</span>"
+            )
             if detail:
                 value += '<br><span class="check-detail">' + html_escape_text(detail) + "</span>"
             cards.append(
@@ -1209,34 +1225,49 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "<style>",
         """
         :root { color-scheme: light; }
-        body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 24px; background: #f5f7fb; color: #1f2937; }
-        .report { max-width: 1080px; margin: 0 auto; background: #fff; border: 1px solid #d9e1ec; border-radius: 14px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); overflow: hidden; }
-        header { padding: 24px 28px; background: linear-gradient(135deg, #102a43, #243b53); color: #fff; }
-        header h1 { margin: 0; font-size: 28px; }
-        main { padding: 24px 28px 32px; }
-        section { margin-bottom: 32px; }
-        section h2 { margin: 0 0 14px; font-size: 20px; border-bottom: 2px solid #d9e1ec; padding-bottom: 8px; }
-        section h3 { margin: 20px 0 10px; font-size: 16px; }
-        .muted { color: #52606d; }
+        * { box-sizing: border-box; }
+        body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; margin: 0; padding: 28px; background: #f4f7fb; color: #1f2937; line-height: 1.45; }
+        .report { max-width: 1120px; margin: 0 auto; }
+        .report-header { padding: 28px 32px; background: #173b5d; color: #fff; border-radius: 16px; box-shadow: 0 10px 24px rgba(23, 59, 93, 0.16); }
+        .eyebrow { margin: 0 0 6px; color: #c9d8e8; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+        .report-header h1 { margin: 0; font-size: 30px; line-height: 1.2; }
+        .report-context { margin: 10px 0 0; color: #e5edf5; font-size: 14px; overflow-wrap: anywhere; }
+        main { padding: 24px 0 8px; }
+        .section-card { margin-bottom: 18px; padding: 22px 24px; background: #fff; border: 1px solid #dce5ef; border-radius: 14px; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04); }
+        .section-card h2 { margin: 0 0 16px; color: #173b5d; font-size: 20px; line-height: 1.25; }
+        .section-card h3 { margin: 22px 0 10px; color: #334e68; font-size: 15px; }
+        .muted { color: #627d98; }
+        .section-count { margin: -8px 0 14px; color: #627d98; font-size: 14px; }
         .quick-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-        .quick-check { padding: 12px 14px; border: 1px solid #d9e1ec; border-radius: 10px; background: #f8fafc; min-width: 0; }
-        .check-label { display: block; color: #334e68; font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+        .quick-check { padding: 12px 14px; border: 1px solid #dce5ef; border-radius: 10px; background: #f8fafc; min-width: 0; }
+        .check-label { display: block; color: #334e68; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
         .check-status { font-weight: 700; }
-        .check-detail { color: #52606d; font-size: 0.9em; overflow-wrap: anywhere; }
-        .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d9e1ec; border-radius: 10px; padding: 14px; margin: 0; overflow-wrap: anywhere; }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; line-height: 1.2; }
+        .badge-neutral { color: #274c77; background: #eaf1f8; }
+        .badge-notice { color: #7a4b00; background: #fff3d6; }
+        .check-detail { color: #627d98; font-size: 0.9em; overflow-wrap: anywhere; }
+        .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #dce5ef; border-radius: 10px; padding: 16px; margin: 0; overflow-wrap: anywhere; }
         .summary-table, table { width: 100%; border-collapse: collapse; }
         .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
-        .summary-table th, .card th { width: 230px; background: #f8fafc; font-weight: 700; }
-        .card { border: 1px solid #d9e1ec; border-radius: 12px; overflow: hidden; margin-top: 14px; background: #fff; }
-        .card h3 { margin: 0; padding: 12px 16px; background: #eef4fb; font-size: 16px; }
-        .card-meta { color: #52606d; font-size: 0.85em; font-weight: 400; }
+        .summary-table tr:last-child th, .summary-table tr:last-child td, .card tr:last-child th, .card tr:last-child td { border-bottom: 0; }
+        .summary-table th, .card th { width: 235px; color: #334e68; background: #f8fafc; font-weight: 700; }
+        .card { border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; margin-top: 12px; background: #fff; }
+        .card h3 { margin: 0; padding: 11px 14px; background: #f1f6fb; color: #334e68; font-size: 15px; }
+        .card-meta { color: #627d98; font-size: 0.85em; font-weight: 400; }
         .card table { margin: 0; }
-        ul { margin: 0; padding-left: 22px; }
-        li + li { margin-top: 8px; }
-        .note { margin: 0 0 12px; padding: 12px 14px; background: #f8fafc; border-left: 4px solid #3b82f6; border-radius: 8px; }
+        .technical-list { margin: 0; padding-left: 20px; }
+        .technical-list li { overflow-wrap: anywhere; word-break: break-word; }
+        .technical-list li + li { margin-top: 8px; }
+        .note { margin: 0 0 12px; padding: 12px 14px; color: #334e68; background: #f8fafc; border-left: 4px solid #7fa6c9; border-radius: 8px; }
+        .collapsible { border: 1px solid #dce5ef; border-radius: 10px; background: #fbfdff; }
+        .collapsible summary { padding: 12px 14px; color: #274c77; cursor: pointer; font-weight: 700; }
+        .collapsible summary:hover { background: #f1f6fb; }
+        .collapsible-content { padding: 0 14px 14px; }
         @media (max-width: 720px) {
-          body { padding: 12px; }
-          header, main { padding-left: 16px; padding-right: 16px; }
+          body { padding: 14px; }
+          .report-header { padding: 22px 20px; }
+          .report-header h1 { font-size: 25px; }
+          .section-card { padding: 18px 16px; }
           .summary-table th, .card th { width: 40%; }
           .quick-checks { grid-template-columns: 1fr; }
         }
@@ -1246,9 +1277,17 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "</head>",
         "<body>",
         '<div class="report">',
-        "<header><h1>Phishing Triage Report</h1></header>",
+        '<header class="report-header">',
+        '<p class="eyebrow">Local email triage</p>',
+        "<h1>Phishing Triage Report</h1>",
+        '<p class="report-context">Subject: '
+        + html_escape_text(summary["subject"])
+        + "<br>From: "
+        + html_escape_text(summary["sender"])
+        + "</p>",
+        "</header>",
         "<main>",
-        '<section><h2>Email Summary</h2><table class="summary-table">',
+        '<section class="section-card"><h2>Email Summary</h2><table class="summary-table">',
         render_kv_rows(
             [
                 ("From", summary["sender"]),
@@ -1260,10 +1299,10 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
-        '<section><h2>Body Preview</h2><div class="content">'
+        '<section class="section-card"><h2>Body Preview</h2><div class="content">'
         + html_escape_text(summary["body_preview"])
         + "</div></section>",
-        '<section><h2>Sender IP Analysis</h2><table class="summary-table">',
+        '<section class="section-card"><h2>Sender IP Analysis</h2><table class="summary-table">',
         render_kv_rows(
             [
                 ("Sender IP", summary["sender_ip"]),
@@ -1272,10 +1311,10 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
-        '<section><h2>Quick Checks</h2>',
+        '<section class="section-card"><h2>Quick Checks</h2>',
         render_quick_checks(),
         "</section>",
-        '<section><h2>Authentication Results</h2><table class="summary-table">',
+        '<section class="section-card"><h2>Authentication Results</h2><table class="summary-table">',
         render_kv_rows(
             [
                 ("SPF", summary["spf_result"]),
@@ -1287,15 +1326,25 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "<h3>Authentication-Results Header</h3>",
         render_empty_or_text_list(authentication_results),
         "</section>",
-        '<section><h2>URLs / Safe Links</h2>',
+        '<section class="section-card"><h2>URLs / Safe Links</h2>',
+        f'<p class="section-count">{len(url_entries)} unique URL(s) found.</p>',
+        '<details class="collapsible">',
+        f'<summary>Show URL findings ({len(url_entries)})</summary>',
+        '<div class="collapsible-content">',
         render_urls(),
+        "</div></details>",
         "</section>",
-        '<section><h2>Attachments</h2>',
+        '<section class="section-card"><h2>Attachments</h2>',
+        f'<p class="section-count">{len(attachments)} attachment(s) | {len(inline_content)} inline/embedded item(s)</p>',
         render_content_cards(attachments, "Attachment"),
         "<h3>Inline / Embedded Content</h3>",
         render_content_cards(inline_content, "Inline Item"),
         "</section>",
-        '<section><h2>Technical Details</h2>',
+        '<section class="section-card"><h2>Technical Details</h2>',
+        f'<p class="section-count">{len(received_headers)} Received header(s)</p>',
+        '<details class="collapsible">',
+        f'<summary>Show mail route and raw headers ({len(received_headers)})</summary>',
+        '<div class="collapsible-content">',
         "<h3>Mail Route / Received Headers</h3>",
         '<p class="note">These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.</p>',
         '<table class="summary-table">',
@@ -1312,6 +1361,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         render_received_routes(),
         "<h3>Raw Received Headers</h3>",
         render_empty_or_text_list(received_headers),
+        "</div></details>",
         "</section>",
         "</main></div></body></html>",
     ]

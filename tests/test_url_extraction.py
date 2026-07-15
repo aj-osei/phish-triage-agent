@@ -111,6 +111,21 @@ class URLExtractionTests(unittest.TestCase):
                     f"{main.normalize_email_address(return_path) or 'not found'}",
                 )
 
+    def test_html_report_uses_local_collapsible_ui_elements(self) -> None:
+        message = EmailMessage()
+        message["From"] = "sender@example.com"
+        message["To"] = "recipient@example.edu"
+        message["Subject"] = "HTML report UI test"
+        message.set_content("Review https://example.com/a/very/long/path")
+
+        report = main.build_html_report(main.build_summary_data(message))
+
+        self.assertIn('class="section-card"', report)
+        self.assertIn('class="quick-checks"', report)
+        self.assertIn('<details class="collapsible">', report)
+        self.assertNotIn("<script", report.lower())
+        self.assertNotIn("<a href=", report.lower())
+
     def test_manual_folder_processing_honors_output_and_format(self) -> None:
         input_folder = Path("samples").resolve()
         output_folder = Path("custom_reports").resolve()
