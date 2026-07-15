@@ -91,6 +91,16 @@ python src/main.py --watch inbox --output reports --format both
 
 The watcher only checks that one folder (not subfolders). Stop it with `Ctrl+C`.
 
+### Simple Windows Launcher
+
+For routine analyst use on Windows, double-click `Start_Phish_Pharm.bat` in the project root. The launcher uses the visible Desktop when possible: it prefers a OneDrive Commercial Desktop, then a OneDrive Desktop, and finally `%USERPROFILE%\Desktop`. It creates `Inbox` and `Reports` there if they do not already exist, then starts the watcher.
+
+1. Drop `.eml` files into `Desktop\Inbox`.
+2. Open the generated Markdown or HTML reports from `Desktop\Reports`.
+3. Press `Ctrl+C` in the launcher window to stop the watcher.
+
+VS Code is not required for normal launcher use, provided Python is installed and the repository files are present.
+
 ## Running Tests
 
 Run the unit tests:
@@ -121,5 +131,4 @@ Possible future improvements include:
 - Improve handling for legitimate Return-Path subdomains and third-party bounce domains.
 - Add collapsible HTML sections for long URL lists.
 - Add more sample emails and tests.
-- Add an optional watch-folder workflow for drag-and-drop `.eml` processing.
 - Add optional reputation checks later, if approved.
