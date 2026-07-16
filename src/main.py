@@ -861,6 +861,7 @@ def build_summary_data(message) -> Dict[str, object]:
         "recipient": recipient,
         "subject": subject,
         "sent_date": sent_date,
+        "body_text": body_text,
         "body_preview": preview,
         "urls": urls,
         "url_entries": url_entries,
@@ -1091,6 +1092,13 @@ def build_html_report(summary: Dict[str, object]) -> str:
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
+    subject = str(summary["subject"])
+    full_body_text = str(summary.get("body_text") or "(no plain-text body found)")
+    header_subject = (
+        '<p class="report-context">Subject: ' + html_escape_text(subject) + "</p>"
+        if subject != "(not provided)"
+        else ""
+    )
 
     def render_kv_rows(items: List[tuple[str, object]]) -> str:
         rows = []
@@ -1229,9 +1237,8 @@ def build_html_report(summary: Dict[str, object]) -> str:
         body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; margin: 0; padding: 28px; background: #f4f7fb; color: #1f2937; line-height: 1.45; }
         .report { max-width: 1120px; margin: 0 auto; }
         .report-header { padding: 28px 32px; background: #173b5d; color: #fff; border-radius: 16px; box-shadow: 0 10px 24px rgba(23, 59, 93, 0.16); }
-        .eyebrow { margin: 0 0 6px; color: #c9d8e8; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
         .report-header h1 { margin: 0; font-size: 30px; line-height: 1.2; }
-        .report-context { margin: 10px 0 0; color: #e5edf5; font-size: 14px; overflow-wrap: anywhere; }
+        .report-context { margin: 8px 0 0; color: #e5edf5; font-size: 14px; overflow-wrap: anywhere; }
         main { padding: 24px 0 8px; }
         .section-card { margin-bottom: 18px; padding: 22px 24px; background: #fff; border: 1px solid #dce5ef; border-radius: 14px; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04); }
         .section-card h2 { margin: 0 0 16px; color: #173b5d; font-size: 20px; line-height: 1.25; }
@@ -1247,6 +1254,8 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .badge-notice { color: #7a4b00; background: #fff3d6; }
         .check-detail { color: #627d98; font-size: 0.9em; overflow-wrap: anywhere; }
         .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #dce5ef; border-radius: 10px; padding: 16px; margin: 0; overflow-wrap: anywhere; }
+        .body-details { margin-top: 12px; }
+        .body-details .content { margin: 0 14px 14px; }
         .summary-table, table { width: 100%; border-collapse: collapse; }
         .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
         .summary-table tr:last-child th, .summary-table tr:last-child td, .card tr:last-child th, .card tr:last-child td { border-bottom: 0; }
@@ -1278,13 +1287,8 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "<body>",
         '<div class="report">',
         '<header class="report-header">',
-        '<p class="eyebrow">Local email triage</p>',
         "<h1>Phishing Triage Report</h1>",
-        '<p class="report-context">Subject: '
-        + html_escape_text(summary["subject"])
-        + "<br>From: "
-        + html_escape_text(summary["sender"])
-        + "</p>",
+        header_subject,
         "</header>",
         "<main>",
         '<section class="section-card"><h2>Email Summary</h2><table class="summary-table">',
@@ -1301,7 +1305,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
         "</table></section>",
         '<section class="section-card"><h2>Body Preview</h2><div class="content">'
         + html_escape_text(summary["body_preview"])
-        + "</div></section>",
+        + '</div><details class="collapsible body-details"><summary>View full body</summary><div class="content">'
+        + html_escape_text(full_body_text)
+        + "</div></details></section>",
         '<section class="section-card"><h2>Sender IP Analysis</h2><table class="summary-table">',
         render_kv_rows(
             [
