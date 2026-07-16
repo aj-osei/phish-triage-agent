@@ -93,13 +93,13 @@ The watcher only checks that one folder (not subfolders). Stop it with `Ctrl+C`.
 
 ### Simple Windows Launcher
 
-For routine analyst use on Windows, double-click `Start_Phish_Pharm.bat` in the project root. The launcher uses the visible Desktop when possible: it prefers a OneDrive Commercial Desktop, then a OneDrive Desktop, and finally `%USERPROFILE%\Desktop`. It creates `Inbox` and `Reports` there if they do not already exist, then starts the watcher.
+For routine analyst use on Windows, double-click `Start_Phish_Pharm.bat` in the project root. The launcher uses the visible Desktop when possible: it prefers a OneDrive Commercial Desktop, then a OneDrive Desktop, and finally `%USERPROFILE%\Desktop`. It creates `Inbox` and `Reports` there if they do not already exist, then starts an HTML-only watcher.
 
 1. Drop `.eml` files into `Desktop\Inbox`.
-2. Open the generated Markdown or HTML reports from `Desktop\Reports`.
+2. Open the generated HTML reports from `Desktop\Reports`.
 3. Press `Ctrl+C` in the launcher window to stop the watcher.
 
-VS Code is not required for normal launcher use, provided Python is installed and the repository files are present.
+VS Code is not required for normal launcher use, provided Python is installed and the repository files are present. Markdown remains available through the command line with `--format md` or `--format both` when needed.
 
 ## Running Tests
 

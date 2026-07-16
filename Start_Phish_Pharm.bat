@@ -35,11 +35,11 @@ if not exist "%REPORTS_PATH%" (
 
 echo Phish Pharm is watching the Inbox folder.
 echo Drop .eml files into the Inbox path shown above.
-echo Reports will appear in the Reports path shown above.
+echo HTML reports will appear in the Reports path shown above.
 echo Press Ctrl+C to stop.
 echo.
 
-python src\main.py --watch "%INBOX_PATH%" --output "%REPORTS_PATH%" --format both
+python src\main.py --watch "%INBOX_PATH%" --output "%REPORTS_PATH%" --format html
 
 echo.
 echo Phish Pharm has stopped.
