@@ -6,6 +6,10 @@ Phish Pharm is a Python tool that parses `.eml` phishing-email samples and creat
 
 The tool supports analyst review; it does **not** make a final automated malicious or safe verdict.
 
+## MVP Status
+
+The current MVP supports local `.eml` triage, HTML reports, Quick Checks, URL extraction, authentication summaries, and a watch-folder workflow.
+
 ## Current Features
 
 - Parses `.eml` email files.
@@ -101,6 +105,15 @@ For routine analyst use on Windows, double-click `Start_Phish_Pharm.bat` in the 
 
 VS Code is not required for normal launcher use, provided Python is installed and the repository files are present. Markdown remains available through the command line with `--format md` or `--format both` when needed.
 
+## Analyst Demo Workflow
+
+1. Double-click `Start_Phish_Pharm.bat`.
+2. Confirm `Desktop\Inbox` and `Desktop\Reports` are created.
+3. Drop an `.eml` file into `Desktop\Inbox`.
+4. Wait for an HTML report to appear in `Desktop\Reports`.
+5. Open the HTML report in a browser for review.
+6. Press `Ctrl+C` in the launcher window to stop the watcher.
+
 ## Running Tests
 
 Run the unit tests:
@@ -123,6 +136,17 @@ python -m py_compile src/main.py tests/test_url_extraction.py
 - It does not send URLs or attachments to external services by default.
 - Analysts should still review all report results manually.
 - Do not commit real phishing messages, internal tickets, credentials, or other sensitive data to source control.
+
+## Known Limitations
+
+- Python must be installed and available on `PATH` for the launcher and command line to run.
+- Watch mode monitors only one folder and does not process subfolders.
+- The tool does not make a final malicious or safe verdict.
+- The tool does not open URLs.
+- The tool does not render email HTML.
+- The tool does not send URLs or attachments to external services by default.
+- Return-Path differences can be legitimate, particularly for subdomains and third-party senders.
+- Report analysis is only as complete as the data available in the parsed `.eml` file.
 
 ## Project Status / Next Steps
 
