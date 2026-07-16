@@ -116,13 +116,21 @@ class URLExtractionTests(unittest.TestCase):
         message["From"] = "sender@example.com"
         message["To"] = "recipient@example.edu"
         message["Subject"] = "HTML report UI test"
-        message.set_content("Review https://example.com/a/very/long/path")
+        message.set_content(
+            "Review https://example.com/a/very/long/path\n"
+            "Second line with <script>untrusted text</script>."
+        )
 
         report = main.build_html_report(main.build_summary_data(message))
 
         self.assertIn('class="section-card"', report)
         self.assertIn('class="quick-checks"', report)
         self.assertIn('<details class="collapsible">', report)
+        self.assertIn("Subject: HTML report UI test", report)
+        self.assertIn("View full body", report)
+        self.assertIn("Second line with &lt;script&gt;untrusted text&lt;/script&gt;.", report)
+        self.assertNotIn("Local email triage", report)
+        self.assertNotIn("<br>From:", report)
         self.assertNotIn("<script", report.lower())
         self.assertNotIn("<a href=", report.lower())
 
