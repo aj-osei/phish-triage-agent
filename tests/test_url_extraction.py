@@ -129,10 +129,26 @@ class URLExtractionTests(unittest.TestCase):
         self.assertIn("Subject: HTML report UI test", report)
         self.assertIn("View full body", report)
         self.assertIn("Second line with &lt;script&gt;untrusted text&lt;/script&gt;.", report)
+        self.assertIn("No raw Received headers found.", report)
         self.assertNotIn("Local email triage", report)
         self.assertNotIn("<br>From:", report)
+        self.assertNotIn("Received Header Public Originating IP", report)
         self.assertNotIn("<script", report.lower())
         self.assertNotIn("<a href=", report.lower())
+
+    def test_html_report_keeps_raw_received_headers_in_advanced_details(self) -> None:
+        message = EmailMessage()
+        message["From"] = "sender@example.com"
+        message["To"] = "recipient@example.edu"
+        message["Received"] = "from relay.example (relay.example [198.51.100.7]) by recipient.example; Wed, 1 Jan 2025 00:00:00 +0000"
+        message.set_content("Body text")
+
+        report = main.build_html_report(main.build_summary_data(message))
+
+        self.assertIn("Advanced: Raw Received Headers", report)
+        self.assertIn("Raw Received Headers", report)
+        self.assertIn("relay.example", report)
+        self.assertNotIn("Received Header Public Originating IP", report)
 
     def test_manual_folder_processing_honors_output_and_format(self) -> None:
         input_folder = Path("samples").resolve()

@@ -1092,6 +1092,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
     authentication_results = summary["authentication_results"]
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
+    raw_received_headers = [header for header in received_headers if header != "Not found"]
     subject = str(summary["subject"])
     full_body_text = str(summary.get("body_text") or "(no plain-text body found)")
     header_subject = (
@@ -1223,6 +1224,29 @@ def build_html_report(summary: Dict[str, object]) -> str:
             )
         return "\n".join(cards)
 
+    def render_advanced_received_headers() -> str:
+        """Render raw mail-routing evidence only when it is available."""
+        if not raw_received_headers:
+            return '<p class="muted">No raw Received headers found.</p>'
+
+        content = ['<details class="collapsible">', '<summary>Advanced: Raw Received Headers</summary>', '<div class="collapsible-content">']
+        if received_routes:
+            content.extend(
+                [
+                    "<h3>Parsed Hops</h3>",
+                    '<p class="muted">Parsed from Received headers; this is mail transport evidence, not the visible From sender.</p>',
+                    render_received_routes(),
+                ]
+            )
+        content.extend(
+            [
+                "<h3>Raw Received Headers</h3>",
+                render_empty_or_text_list(raw_received_headers),
+                "</div></details>",
+            ]
+        )
+        return "\n".join(content)
+
     html_parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -1347,27 +1371,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         render_content_cards(inline_content, "Inline Item"),
         "</section>",
         '<section class="section-card"><h2>Technical Details</h2>',
-        f'<p class="section-count">{len(received_headers)} Received header(s)</p>',
-        '<details class="collapsible">',
-        f'<summary>Show mail route and raw headers ({len(received_headers)})</summary>',
-        '<div class="collapsible-content">',
-        "<h3>Mail Route / Received Headers</h3>",
-        '<p class="note">These findings are based on Received headers (mail transport path) and are not the same as the visible From sender.</p>',
-        '<table class="summary-table">',
-        render_kv_rows(
-            [
-                ("Received Header Public Originating IP", summary["likely_originating_ip"]),
-                ("Received Header Public Originating IP Note", summary["likely_originating_ip_note"]),
-                ("Last Sending Relay Before Recipient Mail Server", summary["last_sending_relay_ip"]),
-                ("Last Sending Relay Note", summary["last_sending_relay_ip_note"]),
-            ]
-        ),
-        "</table>",
-        '<p class="muted" style="margin-top: 16px;">Parsed hops (earliest observed to latest):</p>',
-        render_received_routes(),
-        "<h3>Raw Received Headers</h3>",
-        render_empty_or_text_list(received_headers),
-        "</div></details>",
+        render_advanced_received_headers(),
         "</section>",
         "</main></div></body></html>",
     ]
