@@ -10,7 +10,7 @@ import time
 from email import policy
 from email.header import decode_header
 from email.parser import BytesParser
-from email.utils import parseaddr
+from email.utils import parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, List
@@ -465,11 +465,20 @@ def parse_received_header(received_header: str) -> Dict[str, object]:
     by_match = re.search(r"\bby\s+(.+?)(?=\s+with\b|\s+for\b|;|$)", cleaned, re.IGNORECASE)
     ip_match = re.search(r"\[([0-9a-fA-F:.]+)\]", cleaned)
     timestamp = cleaned.split(";", 1)[1].strip() if ";" in cleaned else "Not found"
+    transport_match = re.search(r"\bwith\s+([A-Za-z0-9._-]+)", cleaned, re.IGNORECASE)
+    tls_matches = re.findall(r"\b(?:TLS|SSL)[A-Za-z0-9._-]*", cleaned, re.IGNORECASE)
 
     from_server = from_match.group(1).strip() if from_match else "Not found"
     by_server = by_match.group(1).strip() if by_match else "Not found"
     source_ip = ip_match.group(1).strip() if ip_match else "Not found"
     ip_classification = classify_ip_address(source_ip) if source_ip != "Not found" else "Not found"
+    transport_details = []
+    if transport_match:
+        transport_details.append(transport_match.group(1))
+    for tls_value in tls_matches:
+        if tls_value.lower() not in {value.lower() for value in transport_details}:
+            transport_details.append(tls_value)
+    transport_type = " | ".join(transport_details) if transport_details else "Not found"
     is_parsed = any(value != "Not found" for value in [from_server, by_server, source_ip, timestamp])
 
     return {
@@ -478,6 +487,7 @@ def parse_received_header(received_header: str) -> Dict[str, object]:
         "ip_classification": ip_classification,
         "by_server": by_server,
         "timestamp": timestamp,
+        "transport_type": transport_type,
         "raw": cleaned,
         "parsed": is_parsed,
     }
@@ -492,6 +502,56 @@ def build_received_route_details(received_headers: List[str]) -> List[Dict[str, 
     for header in received_headers:
         parsed_routes.append(parse_received_header(header))
     return parsed_routes
+
+
+def format_received_hop_delay(total_seconds: float) -> str:
+    """Return a compact non-negative delay string for a pair of Received hops."""
+    seconds = int(total_seconds)
+    if seconds < 0:
+        return "Not calculated"
+
+    days, remaining_seconds = divmod(seconds, 86400)
+    hours, remaining_seconds = divmod(remaining_seconds, 3600)
+    minutes, seconds = divmod(remaining_seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
+def calculate_received_hop_delays(received_routes: List[Dict[str, object]]) -> List[str]:
+    """Calculate delays for routes ordered from earliest observed to latest."""
+    delays: List[str] = []
+    previous_timestamp = None
+
+    for route in received_routes:
+        timestamp_text = str(route.get("timestamp", "Not found"))
+        try:
+            current_timestamp = (
+                parsedate_to_datetime(timestamp_text)
+                if timestamp_text != "Not found"
+                else None
+            )
+        except (IndexError, TypeError, ValueError):
+            current_timestamp = None
+
+        if previous_timestamp is None or current_timestamp is None:
+            delays.append("Not calculated")
+        else:
+            delays.append(
+                format_received_hop_delay(
+                    (current_timestamp - previous_timestamp).total_seconds()
+                )
+            )
+        previous_timestamp = current_timestamp
+
+    return delays
 
 
 def find_likely_originating_ip(received_routes: List[Dict[str, object]]) -> str:
@@ -1202,15 +1262,16 @@ def build_html_report(summary: Dict[str, object]) -> str:
         if not received_routes:
             return '<p class="muted">Not found</p>'
 
+        displayed_routes = list(reversed(received_routes))
+        hop_delays = calculate_received_hop_delays(displayed_routes)
         cards = []
-        for index, route in enumerate(list(reversed(received_routes)), start=1):
+        for index, (route, hop_delay) in enumerate(zip(displayed_routes, hop_delays), start=1):
             rows = [
-                ("From server", route["from_server"]),
-                ("Source IP From Header", route["source_ip"]),
-                ("IP Classification", route["ip_classification"]),
-                ("By server", route["by_server"]),
-                ("Timestamp", route["timestamp"]),
-                ("Raw header", route["raw"]),
+                ("Submitting host", route["from_server"]),
+                ("Receiving host", route["by_server"]),
+                ("Time", route["timestamp"]),
+                ("Delay", hop_delay),
+                ("Type", route.get("transport_type", "Not found")),
             ]
             if not route["parsed"]:
                 rows.append(("Parse status", "Could not parse this header reliably."))
@@ -1234,7 +1295,6 @@ def build_html_report(summary: Dict[str, object]) -> str:
             content.extend(
                 [
                     "<h3>Parsed Hops</h3>",
-                    '<p class="muted">Parsed from Received headers; this is mail transport evidence, not the visible From sender.</p>',
                     render_received_routes(),
                 ]
             )

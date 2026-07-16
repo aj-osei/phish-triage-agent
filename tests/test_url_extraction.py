@@ -140,7 +140,7 @@ class URLExtractionTests(unittest.TestCase):
         message = EmailMessage()
         message["From"] = "sender@example.com"
         message["To"] = "recipient@example.edu"
-        message["Received"] = "from relay.example (relay.example [198.51.100.7]) by recipient.example; Wed, 1 Jan 2025 00:00:00 +0000"
+        message["Received"] = "from relay.example (relay.example [198.51.100.7]) by recipient.example with ESMTPS (TLS1.2); Wed, 1 Jan 2025 00:00:00 +0000"
         message.set_content("Body text")
 
         report = main.build_html_report(main.build_summary_data(message))
@@ -148,7 +148,28 @@ class URLExtractionTests(unittest.TestCase):
         self.assertIn("Advanced: Raw Received Headers", report)
         self.assertIn("Raw Received Headers", report)
         self.assertIn("relay.example", report)
+        self.assertIn("Submitting host", report)
+        self.assertIn("Receiving host", report)
+        self.assertIn("Time", report)
+        self.assertIn("Delay", report)
+        self.assertIn("Type", report)
+        self.assertIn("ESMTPS | TLS1.2", report)
+        self.assertIn("<h3>Hop 1</h3>", report)
+        self.assertNotIn("<th>Hop</th>", report)
+        self.assertNotIn("Parsed from Received headers", report)
         self.assertNotIn("Received Header Public Originating IP", report)
+
+    def test_received_hop_delay_calculation_uses_safe_fallbacks(self) -> None:
+        routes = [
+            {"timestamp": "Wed, 1 Jan 2025 00:00:00 +0000"},
+            {"timestamp": "Wed, 1 Jan 2025 00:01:30 +0000"},
+            {"timestamp": "Not found"},
+        ]
+
+        self.assertEqual(
+            main.calculate_received_hop_delays(routes),
+            ["Not calculated", "1m 30s", "Not calculated"],
+        )
 
     def test_manual_folder_processing_honors_output_and_format(self) -> None:
         input_folder = Path("samples").resolve()
