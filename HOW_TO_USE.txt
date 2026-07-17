@@ -1,0 +1,27 @@
+Phish Pharm - Quick Start
+
+1. Extract the ZIP first.
+   Do not run the tool from inside the compressed ZIP folder.
+
+2. Make sure Python is installed.
+   Recommended: Python 3.13 64-bit.
+   During installation, check "Add python.exe to PATH".
+
+3. Double-click Start_Phish_Pharm.bat.
+
+4. The tool will create and use two Desktop folders:
+   - Inbox
+   - Reports
+
+5. Drop a .eml file into the Desktop Inbox folder.
+
+6. Open the generated .html report from the Desktop Reports folder.
+
+7. To stop the watcher, click the black command window and press Ctrl + C.
+
+Notes:
+- Only process .eml files you are allowed to analyze.
+- The tool does not open links.
+- The tool does not render unsafe email HTML.
+- The tool does not make a final malicious/safe verdict.
+- Analyst review is still required.
