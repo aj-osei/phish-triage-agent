@@ -52,6 +52,22 @@ python src/main.py --watch inbox --output reports --format html
 
 The CLI also supports `--format md` and `--format both`.
 
+## AbuseIPDB Configuration
+
+Sender-IP reputation checks are optional. Set `ABUSEIPDB_API_KEY` before starting the tool; never place a real key in source files or reports.
+
+Windows Command Prompt:
+
+```cmd
+set ABUSEIPDB_API_KEY=your_key_here
+```
+
+PowerShell:
+
+```powershell
+$env:ABUSEIPDB_API_KEY="your_key_here"
+```
+
 ## Running Tests
 
 ```powershell

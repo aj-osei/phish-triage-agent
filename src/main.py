@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qs, unquote, urlparse
 
+from reputation import ReputationService, build_unchecked_reputation_checks
+
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
@@ -1153,6 +1155,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
     received_headers = summary["received_headers"]
     received_routes = summary["received_routes"]
     raw_received_headers = [header for header in received_headers if header != "Not found"]
+    reputation_checks = summary.get(
+        "reputation_checks", build_unchecked_reputation_checks(str(summary["sender_ip"]))
+    )
     subject = str(summary["subject"])
     full_body_text = str(summary.get("body_text") or "(no plain-text body found)")
     header_subject = (
@@ -1211,6 +1216,56 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 + "</article>"
             )
         return '<div class="quick-checks">' + "\n".join(cards) + "</div>"
+
+    def render_reputation_result(result: object) -> str:
+        """Render a normalized reputation result without exposing provider internals."""
+        if not isinstance(result, dict):
+            result = {
+                "provider": "Not configured",
+                "status": "Not checked yet — provider not configured",
+                "details": {},
+            }
+
+        details = result.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        rows = [
+            ("Lookup status", result.get("status", "Not checked")),
+            ("Lookup provider", result.get("provider", "Not configured")),
+        ]
+        rows.extend((str(label), value) for label, value in details.items())
+        return '<article class="card reputation-result"><table>' + render_kv_rows(rows) + "</table></article>"
+
+    def render_reputation_checks() -> str:
+        future_checks = (
+            ("Domain Reputation", "domain"),
+            ("URL Reputation", "url"),
+            ("Attachment Hash Reputation", "attachment_hash"),
+        )
+        sender_result = (
+            reputation_checks.get("sender_ip", {})
+            if isinstance(reputation_checks, dict)
+            else {}
+        )
+        content = [
+            '<details class="collapsible reputation-details">',
+            "<summary>Sender IP Reputation</summary>",
+            '<div class="collapsible-content">',
+            render_reputation_result(sender_result),
+            "</div></details>",
+        ]
+        for label, key in future_checks:
+            result = reputation_checks.get(key, {}) if isinstance(reputation_checks, dict) else {}
+            content.extend(
+                [
+                    '<details class="collapsible reputation-details">',
+                    f"<summary>{html_escape_text(label)}</summary>",
+                    '<div class="collapsible-content">',
+                    render_reputation_result(result),
+                    "</div></details>",
+                ]
+            )
+        return "\n".join(content)
 
     def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:
         if not items:
@@ -1404,6 +1459,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
         '<section class="section-card"><h2>Quick Checks</h2>',
         render_quick_checks(),
         "</section>",
+        '<section class="section-card"><h2>Reputation Checks</h2>',
+        render_reputation_checks(),
+        "</section>",
         '<section class="section-card"><h2>Authentication Results</h2><table class="summary-table">',
         render_kv_rows(
             [
@@ -1475,6 +1533,16 @@ def process_eml_file(
         raw_email = read_eml_bytes(eml_path)
         message = parse_email(raw_email)
         summary = build_summary_data(message)
+        try:
+            summary["reputation_checks"] = ReputationService().check_email(summary)
+        except Exception:
+            # Reputation is optional; a provider problem must never block a local report.
+            summary["reputation_checks"] = build_unchecked_reputation_checks(
+                str(summary["sender_ip"])
+            )
+            summary["reputation_checks"]["sender_ip"]["status"] = (
+                "Lookup failed — provider returned an error"
+            )
         report_path, html_report_path = resolve_unique_report_paths(
             eml_path, output_folder, report_format
         )
