@@ -12,6 +12,7 @@ Current MVP supports:
 - HTML triage reports
 - Quick Checks summary
 - URL and Microsoft Safe Links extraction
+- Optional VirusTotal existing-report URL reputation lookups
 - SPF, DKIM, and DMARC summaries
 - Attachment and inline content summaries
 - Received-header hop details
@@ -52,9 +53,11 @@ python src/main.py --watch inbox --output reports --format html
 
 The CLI also supports `--format md` and `--format both`.
 
-## AbuseIPDB Configuration
+## Reputation API Configuration
 
-Sender-IP reputation checks are optional. Set `ABUSEIPDB_API_KEY` before starting the tool; never place a real key in source files or reports.
+Sender-IP and URL reputation checks are optional. Set API keys before launching the tool or the watch-mode batch file; never place real keys in source files, reports, or GitHub.
+
+### AbuseIPDB
 
 Windows Command Prompt:
 
@@ -66,6 +69,22 @@ PowerShell:
 
 ```powershell
 $env:ABUSEIPDB_API_KEY="your_key_here"
+```
+
+### VirusTotal URL Reputation
+
+VirusTotal lookups retrieve existing URL reports only. They do not submit URLs for scanning and do not visit extracted websites. The current version makes no more than four URL lookup attempts per report, and a public API key may have a limited quota. Emails with additional URLs can show partial results; URLs with no detections are not described as safe or clean.
+
+Windows Command Prompt:
+
+```cmd
+set VIRUSTOTAL_API_KEY=your_key_here
+```
+
+PowerShell:
+
+```powershell
+$env:VIRUSTOTAL_API_KEY="your_key_here"
 ```
 
 ## Running Tests
@@ -94,6 +113,6 @@ python -m py_compile src/main.py tests/test_url_extraction.py
 ## Possible Future Improvements
 
 - Package as an executable so Python is not required.
-- Add optional reputation lookups if approved.
+- Add domain and attachment-hash reputation providers.
 - Add more sample emails and tests.
 - Improve handling of legitimate third-party/bounce sender patterns.

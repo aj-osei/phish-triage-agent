@@ -1236,12 +1236,120 @@ def build_html_report(summary: Dict[str, object]) -> str:
         rows.extend((str(label), value) for label, value in details.items())
         return '<article class="card reputation-result"><table>' + render_kv_rows(rows) + "</table></article>"
 
+    def render_url_reputation(result: object) -> str:
+        """Render compact VirusTotal coverage and only vendor-flagged URL details."""
+        if not isinstance(result, dict):
+            result = {"status": "URL Reputation: Not checked - provider not configured"}
+        flagged_results = result.get("flagged_results", [])
+        if not isinstance(flagged_results, list):
+            flagged_results = []
+
+        provider_status = str(result.get("status", "URL Reputation: Not checked"))
+        def normalized_count(value: object) -> int:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        unique_urls = normalized_count(result.get("total_unique_urls", 0))
+        unchecked_urls = normalized_count(result.get("total_unchecked_urls", 0))
+        checked_urls = max(0, unique_urls - unchecked_urls)
+        flagged_count = normalized_count(result.get("total_flagged_urls", len(flagged_results)))
+        is_complete = bool(result.get("complete"))
+        status_lower = provider_status.lower()
+
+        if provider_status == "URL Reputation: No URLs found":
+            lookup_status = "Not checked - no URLs found"
+        elif provider_status == "URL Reputation: No supported HTTP or HTTPS URLs found":
+            lookup_status = "Not checked - no supported HTTP or HTTPS URLs found"
+        elif "API key not configured" in provider_status:
+            lookup_status = "Not checked - API key not configured"
+        elif "authentication failed" in provider_status:
+            lookup_status = "Lookup failed - authentication error"
+        elif "request timed out" in status_lower:
+            lookup_status = "Partially checked - request timed out"
+        elif "request limit" in status_lower or "rate limit" in status_lower:
+            lookup_status = "Partially checked - request limit reached"
+        elif "network unavailable" in status_lower or "provider returned" in status_lower:
+            lookup_status = "Lookup failed - provider unavailable"
+        elif "no existing report" in status_lower:
+            lookup_status = "Lookup successful - no existing VirusTotal reports"
+        elif "partially checked" in status_lower or not is_complete:
+            lookup_status = "Partially checked - provider unavailable"
+        else:
+            lookup_status = "Lookup successful"
+
+        summary_rows = [
+            ("Lookup status", lookup_status),
+            ("Lookup provider", result.get("provider", "VirusTotal")),
+            ("URLs checked", f"{checked_urls} of {unique_urls}"),
+        ]
+        if flagged_count:
+            detection_result = (
+                f"{flagged_count} URL flagged by VirusTotal vendors"
+                if flagged_count == 1
+                else f"{flagged_count} URLs flagged by VirusTotal vendors"
+            )
+        elif checked_urls and is_complete:
+            detection_result = "None flagged by VirusTotal"
+        elif checked_urls:
+            detection_result = "None flagged in completed lookups"
+        else:
+            detection_result = "Not checked"
+        summary_rows.append(("Detection result", detection_result))
+
+        displayed_flagged_results = [
+            item
+            for item in flagged_results
+            if isinstance(item, dict)
+            and (
+                normalized_count(item.get("malicious", 0)) > 0
+                or normalized_count(item.get("suspicious", 0)) > 0
+            )
+        ]
+        cards = []
+        for index, flagged_result in enumerate(displayed_flagged_results, start=1):
+            decoded_destination = flagged_result.get("decoded_destination", "")
+            if decoded_destination:
+                url_rows = [
+                    ("Checked URL", decoded_destination),
+                    ("Original Safe Link", flagged_result.get("original_url", "Not found")),
+                    ("Decoded destination", decoded_destination),
+                ]
+            else:
+                url_rows = [("Checked URL", flagged_result.get("lookup_url", "Not found"))]
+            url_rows.extend(
+                [
+                    ("Malicious detections", flagged_result.get("malicious", 0)),
+                    ("Suspicious detections", flagged_result.get("suspicious", 0)),
+                    ("Harmless detections", flagged_result.get("harmless", 0)),
+                    ("Undetected", flagged_result.get("undetected", 0)),
+                    ("Last analysis date", flagged_result.get("last_analysis_date", "Not found")),
+                ]
+            )
+            cards.append(
+                '<article class="card reputation-result"><h3>Flagged URL '
+                + str(index)
+                + "</h3><table>"
+                + render_kv_rows(url_rows)
+                + "</table></article>"
+            )
+        content = [
+            '<details class="collapsible reputation-details">',
+            "<summary>URL Reputation</summary>",
+            '<div class="collapsible-content">',
+            '<article class="card reputation-result"><table>'
+            + render_kv_rows(summary_rows)
+            + "</table></article>",
+        ]
+        if cards:
+            content.append("<h3>Flagged URLs</h3>")
+            content.append("\n".join(cards))
+        content.append("</div></details>")
+        return "\n".join(content)
+
     def render_reputation_checks() -> str:
-        future_checks = (
-            ("Domain Reputation", "domain"),
-            ("URL Reputation", "url"),
-            ("Attachment Hash Reputation", "attachment_hash"),
-        )
+        future_checks = (("Attachment Hash Reputation", "attachment_hash"),)
         sender_result = (
             reputation_checks.get("sender_ip", {})
             if isinstance(reputation_checks, dict)
@@ -1254,6 +1362,19 @@ def build_html_report(summary: Dict[str, object]) -> str:
             render_reputation_result(sender_result),
             "</div></details>",
         ]
+        domain_result = reputation_checks.get("domain", {}) if isinstance(reputation_checks, dict) else {}
+        content.extend(
+            [
+                '<details class="collapsible reputation-details">',
+                "<summary>Domain Reputation</summary>",
+                '<div class="collapsible-content">',
+                render_reputation_result(domain_result),
+                "</div></details>",
+                render_url_reputation(
+                    reputation_checks.get("url", {}) if isinstance(reputation_checks, dict) else {}
+                ),
+            ]
+        )
         for label, key in future_checks:
             result = reputation_checks.get(key, {}) if isinstance(reputation_checks, dict) else {}
             content.extend(
@@ -1392,6 +1513,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .badge-neutral { color: #274c77; background: #eaf1f8; }
         .badge-notice { color: #7a4b00; background: #fff3d6; }
         .check-detail { color: #627d98; font-size: 0.9em; overflow-wrap: anywhere; }
+        .reputation-status { margin: 0 0 12px; color: #334e68; overflow-wrap: anywhere; word-break: break-word; }
         .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #dce5ef; border-radius: 10px; padding: 16px; margin: 0; overflow-wrap: anywhere; }
         .body-details { margin-top: 12px; }
         .body-details .content { margin: 0 14px 14px; }
