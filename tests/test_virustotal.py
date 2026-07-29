@@ -12,8 +12,18 @@ from urllib.error import HTTPError, URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import main
-from reputation.models import URLReputationItem, URLReputationSummary
-from reputation.service import ReputationService, prepare_url_reputation_targets
+from reputation.models import (
+    AttachmentReputationItem,
+    AttachmentReputationSummary,
+    ReputationResult,
+    URLReputationItem,
+    URLReputationSummary,
+)
+from reputation.service import (
+    ReputationService,
+    prepare_attachment_reputation_targets,
+    prepare_url_reputation_targets,
+)
 from reputation.virustotal import (
     VirusTotalURLClient,
     _REQUEST_TIMESTAMPS,
@@ -54,6 +64,34 @@ def successful_item(target: dict[str, str], malicious: int = 0, suspicious: int 
         total_engines=81,
         last_analysis_date="2023-11-14T22:13:20+00:00",
         report_id="vt-report-id",
+    )
+
+
+def attachment_target(filename: str, sha256: str, size_bytes: int = 12) -> dict[str, object]:
+    return {
+        "filename": filename,
+        "content_type": "application/pdf",
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    }
+
+
+def successful_attachment_item(
+    target: dict[str, object], malicious: int = 0, suspicious: int = 0
+) -> AttachmentReputationItem:
+    return AttachmentReputationItem(
+        sha256=str(target["sha256"]),
+        filenames=list(target["filenames"]),
+        content_types=list(target["content_types"]),
+        sizes_bytes=list(target["sizes_bytes"]),
+        provider="VirusTotal",
+        status="Lookup successful",
+        malicious=malicious,
+        suspicious=suspicious,
+        harmless=12,
+        undetected=68,
+        total_engines=80,
+        last_analysis_date="2023-11-14T22:13:20+00:00",
     )
 
 
@@ -342,8 +380,18 @@ class VirusTotalURLTests(unittest.TestCase):
 
         report = main.build_html_report(summary)
 
-        self.assertIn("<summary>URL Reputation</summary>", report)
-        self.assertNotIn('<details class="collapsible reputation-details" open>', report)
+        self.assertIn(
+            '<details class="collapsible reputation-details" open>\n<summary>URL Reputation</summary>',
+            report,
+        )
+        self.assertIn(
+            '<details class="collapsible reputation-details" open>\n<summary>Sender IP Reputation</summary>',
+            report,
+        )
+        self.assertIn(
+            '<details class="collapsible reputation-details">\n<summary>Domain Reputation</summary>',
+            report,
+        )
         self.assertIn("<h3>Flagged URLs</h3>", report)
         self.assertIn("<th>Detection result</th><td>1 URL flagged by VirusTotal vendors</td>", report)
         self.assertIn("&lt;script&gt;", report)
@@ -488,6 +536,209 @@ class VirusTotalURLTests(unittest.TestCase):
         self.assertIn("Flagged URL 2", report)
         self.assertIn("Harmless detections", report)
         self.assertIn("overflow-wrap: anywhere", report)
+
+
+class VirusTotalAttachmentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _REQUEST_TIMESTAMPS.clear()
+
+    def test_file_lookup_uses_existing_sha256_report_without_uploading(self) -> None:
+        sha256 = "a" * 64
+        response = MagicMock()
+        response.read.return_value = json.dumps(virustotal_payload()).encode("utf-8")
+        with patch("reputation.virustotal.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = response
+            result = VirusTotalURLClient(api_key="test-key").lookup_file_hash(
+                sha256, ["invoice.pdf"], ["application/pdf"], [12]
+            )
+
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, f"https://www.virustotal.com/api/v3/files/{sha256}")
+        self.assertIsNone(request.data)
+        self.assertEqual(result.status, "Lookup successful")
+        self.assertFalse(result.flagged)
+
+    def test_attachment_target_selection_deduplicates_hashes_and_excludes_empty_parts(self) -> None:
+        shared_hash = "a" * 64
+        attachments = [
+            attachment_target("first.pdf", shared_hash),
+            attachment_target("second.pdf", shared_hash),
+            attachment_target("empty.bin", "b" * 64, size_bytes=0),
+            attachment_target("invalid.bin", "not-a-hash"),
+        ]
+
+        normal_count, targets = prepare_attachment_reputation_targets(attachments)
+
+        self.assertEqual(normal_count, 4)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["filenames"], ["first.pdf", "second.pdf"])
+
+    def test_parser_keeps_inline_content_out_of_normal_attachment_targets(self) -> None:
+        message = EmailMessage()
+        message.set_content("Body")
+        message.add_attachment(b"normal", maintype="application", subtype="pdf", filename="invoice.pdf")
+        message.add_attachment(
+            b"inline-image", maintype="image", subtype="png", filename="logo.png", disposition="inline"
+        )
+
+        content_parts = main.extract_content_parts(message)
+        normal_count, targets = prepare_attachment_reputation_targets(content_parts["attachments"])
+
+        self.assertEqual(normal_count, 1)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(content_parts["inline_content"][0]["filename"], "logo.png")
+
+    def test_attachment_missing_key_and_inline_only_states_do_not_request_provider(self) -> None:
+        client = MagicMock()
+        client.is_configured = False
+        service = ReputationService(virustotal_client=client)
+        valid_attachment = attachment_target("invoice.pdf", "a" * 64)
+
+        missing_key = service.check_attachments([valid_attachment])
+        inline_only = service.check_attachments([], [{"filename": "logo.png"}])
+
+        self.assertIn("API key not configured", missing_key.status)
+        self.assertEqual(missing_key.total_unchecked_hashes, 1)
+        self.assertIn("no file attachments found", inline_only.status)
+        self.assertTrue(inline_only.inline_content_present)
+        client.lookup_file_hash.assert_not_called()
+
+    def test_shared_budget_alternates_attachment_then_url_and_never_exceeds_four(self) -> None:
+        client = MagicMock()
+        client.is_configured = True
+        service = ReputationService(virustotal_client=client)
+        attachment_hashes = ["a" * 64, "b" * 64, "c" * 64]
+        attachments = [attachment_target(f"file-{index}.pdf", value) for index, value in enumerate(attachment_hashes)]
+        urls = [{"original_url": f"https://example.com/{index}"} for index in range(3)]
+        _, _, prepared_urls = prepare_url_reputation_targets(urls)
+        _, prepared_attachments = prepare_attachment_reputation_targets(attachments)
+        client.lookup_file_hash.side_effect = [
+            successful_attachment_item(prepared_attachments[0]),
+            successful_attachment_item(prepared_attachments[1]),
+        ]
+        client.lookup_url.side_effect = [
+            successful_item(prepared_urls[0]),
+            successful_item(prepared_urls[1]),
+        ]
+
+        url_result, attachment_result = service._check_shared_virustotal_indicators(urls, attachments, [])
+
+        self.assertEqual(client.lookup_file_hash.call_count, 2)
+        self.assertEqual(client.lookup_url.call_count, 2)
+        self.assertEqual(
+            [call[0] for call in client.method_calls if call[0].startswith("lookup_")],
+            ["lookup_file_hash", "lookup_url", "lookup_file_hash", "lookup_url"],
+        )
+        self.assertEqual(url_result.total_unchecked_urls, 1)
+        self.assertEqual(attachment_result.total_unchecked_hashes, 1)
+
+    def test_file_404_is_not_flagged_or_detailed_in_html(self) -> None:
+        sha256 = "a" * 64
+        error = HTTPError("https://api.example", 404, "Not found", {}, None)
+        with patch("reputation.virustotal.urlopen", side_effect=error):
+            item = VirusTotalURLClient(api_key="test-key").lookup_file_hash(
+                sha256, ["unknown.bin"], ["application/octet-stream"], [12]
+            )
+        self.assertTrue(item.no_report)
+        self.assertFalse(item.flagged)
+        self.assertFalse(item.failed)
+
+    def test_html_attachment_reputation_is_closed_and_lists_only_flagged_entries(self) -> None:
+        message = EmailMessage()
+        message.set_content("Body")
+        summary = main.build_summary_data(message)
+        flagged = AttachmentReputationItem(
+            sha256="a" * 64,
+            filenames=["bad<script>.exe", "duplicate.exe"],
+            content_types=["application/octet-stream"],
+            sizes_bytes=[123],
+            provider="VirusTotal",
+            status="Lookup successful",
+            malicious=1,
+        )
+        unflagged = AttachmentReputationItem(
+            sha256="b" * 64,
+            filenames=["not-listed.pdf"],
+            content_types=["application/pdf"],
+            sizes_bytes=[10],
+            provider="VirusTotal",
+            status="Lookup successful",
+        )
+        summary["reputation_checks"] = {
+            "sender_ip": {}, "domain": {}, "url": {},
+            "attachment_hash": AttachmentReputationSummary(
+                status="Attachment Hash Reputation: 1 of 2 checked hashes flagged by VirusTotal",
+                total_normal_attachments=3,
+                total_unique_hashes=2,
+                total_flagged_hashes=1,
+                complete=True,
+                flagged_results=[flagged, unflagged],
+            ).as_dict(),
+        }
+
+        report = main.build_html_report(summary)
+
+        self.assertIn(
+            '<details class="collapsible reputation-details" open>\n<summary>Attachment Hash Reputation</summary>',
+            report,
+        )
+        self.assertIn("<th>Attachments checked</th><td>2 of 2</td>", report)
+        self.assertIn("1 attachment flagged by VirusTotal vendors", report)
+        self.assertIn("<h3>Flagged Attachments</h3>", report)
+        self.assertIn("bad&lt;script&gt;.exe", report)
+        self.assertNotIn("not-listed.pdf", report)
+        self.assertIn("overflow-wrap: anywhere", report)
+
+    def test_shared_rate_limit_stops_both_indicator_types(self) -> None:
+        client = MagicMock()
+        client.is_configured = True
+        service = ReputationService(virustotal_client=client)
+        attachments = [attachment_target("blocked.exe", "a" * 64)]
+        urls = [{"original_url": "https://example.com"}]
+        _, prepared_attachments = prepare_attachment_reputation_targets(attachments)
+        client.lookup_file_hash.return_value = AttachmentReputationItem(
+            sha256=prepared_attachments[0]["sha256"],
+            filenames=prepared_attachments[0]["filenames"],
+            content_types=prepared_attachments[0]["content_types"],
+            sizes_bytes=prepared_attachments[0]["sizes_bytes"],
+            provider="VirusTotal",
+            status="Lookup failed - VirusTotal rate limit reached",
+            failed=True,
+            stop_processing=True,
+            rate_limited=True,
+        )
+
+        url_result, attachment_result = service._check_shared_virustotal_indicators(urls, attachments, [])
+
+        client.lookup_url.assert_not_called()
+        self.assertTrue(attachment_result.rate_limit_reached)
+        self.assertTrue(url_result.rate_limit_reached)
+        self.assertEqual(url_result.total_unchecked_urls, 1)
+
+    def test_shared_authentication_failure_stops_both_indicator_types(self) -> None:
+        client = MagicMock()
+        client.is_configured = True
+        service = ReputationService(virustotal_client=client)
+        attachments = [attachment_target("blocked.exe", "a" * 64)]
+        urls = [{"original_url": "https://example.com"}]
+        _, prepared_attachments = prepare_attachment_reputation_targets(attachments)
+        client.lookup_file_hash.return_value = AttachmentReputationItem(
+            sha256=prepared_attachments[0]["sha256"],
+            filenames=prepared_attachments[0]["filenames"],
+            content_types=prepared_attachments[0]["content_types"],
+            sizes_bytes=prepared_attachments[0]["sizes_bytes"],
+            provider="VirusTotal",
+            status="Lookup failed - VirusTotal authentication failed",
+            failed=True,
+            stop_processing=True,
+            authentication_failed=True,
+        )
+
+        url_result, attachment_result = service._check_shared_virustotal_indicators(urls, attachments, [])
+
+        client.lookup_url.assert_not_called()
+        self.assertIn("authentication failed", url_result.status)
+        self.assertIn("authentication failed", attachment_result.status)
 
 
 if __name__ == "__main__":

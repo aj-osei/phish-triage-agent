@@ -1335,7 +1335,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 + "</table></article>"
             )
         content = [
-            '<details class="collapsible reputation-details">',
+            '<details class="collapsible reputation-details" open>',
             "<summary>URL Reputation</summary>",
             '<div class="collapsible-content">',
             '<article class="card reputation-result"><table>'
@@ -1348,15 +1348,125 @@ def build_html_report(summary: Dict[str, object]) -> str:
         content.append("</div></details>")
         return "\n".join(content)
 
+    def render_attachment_reputation(result: object) -> str:
+        """Render compact VirusTotal file-hash coverage and vendor-flagged attachments."""
+        if not isinstance(result, dict):
+            result = {"status": "Attachment Hash Reputation: Not checked - provider not configured"}
+        flagged_results = result.get("flagged_results", [])
+        if not isinstance(flagged_results, list):
+            flagged_results = []
+
+        def normalized_count(value: object) -> int:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        provider_status = str(result.get("status", "Attachment Hash Reputation: Not checked"))
+        status_lower = provider_status.lower()
+        total_hashes = normalized_count(result.get("total_unique_hashes", 0))
+        unchecked_hashes = normalized_count(result.get("total_unchecked_hashes", 0))
+        checked_hashes = max(0, total_hashes - unchecked_hashes)
+        flagged_count = normalized_count(result.get("total_flagged_hashes", len(flagged_results)))
+        is_complete = bool(result.get("complete"))
+
+        if "no file attachments found" in status_lower:
+            lookup_status = "Not checked - no file attachments found"
+        elif "valid attachment hashes unavailable" in status_lower:
+            lookup_status = "Not checked - valid attachment hashes unavailable"
+        elif "api key not configured" in status_lower:
+            lookup_status = "Not checked - API key not configured"
+        elif "authentication failed" in status_lower:
+            lookup_status = "Lookup failed - authentication error"
+        elif "request timed out" in status_lower:
+            lookup_status = "Partially checked - request timed out"
+        elif "request limit" in status_lower or "rate limit" in status_lower:
+            lookup_status = "Partially checked - shared request limit reached"
+        elif "network unavailable" in status_lower or "provider returned" in status_lower:
+            lookup_status = "Lookup failed - provider unavailable"
+        elif "no existing report" in status_lower:
+            lookup_status = "Lookup successful - no existing VirusTotal reports"
+        elif "partially checked" in status_lower or not is_complete:
+            lookup_status = "Partially checked - provider unavailable"
+        else:
+            lookup_status = "Lookup successful"
+
+        summary_rows = [
+            ("Lookup status", lookup_status),
+            ("Lookup provider", result.get("provider", "VirusTotal")),
+            ("Attachments checked", f"{checked_hashes} of {total_hashes}"),
+        ]
+        if flagged_count:
+            detection_result = (
+                "1 attachment flagged by VirusTotal vendors"
+                if flagged_count == 1
+                else f"{flagged_count} attachments flagged by VirusTotal vendors"
+            )
+        elif checked_hashes and is_complete:
+            detection_result = "None flagged by VirusTotal"
+        elif checked_hashes:
+            detection_result = "None flagged in completed lookups"
+        elif result.get("inline_content_present") and total_hashes == 0:
+            detection_result = "Inline or embedded content was not submitted for lookup"
+        else:
+            detection_result = "No attachment hashes checked"
+        summary_rows.append(("Detection result", detection_result))
+
+        displayed_results = [
+            item
+            for item in flagged_results
+            if isinstance(item, dict)
+            and (
+                normalized_count(item.get("malicious", 0)) > 0
+                or normalized_count(item.get("suspicious", 0)) > 0
+            )
+        ]
+        cards = []
+        for index, flagged_result in enumerate(displayed_results, start=1):
+            filenames = flagged_result.get("filenames", [])
+            content_types = flagged_result.get("content_types", [])
+            sizes_bytes = flagged_result.get("sizes_bytes", [])
+            cards.append(
+                '<article class="card reputation-result"><h3>Flagged Attachment '
+                + str(index)
+                + "</h3><table>"
+                + render_kv_rows(
+                    [
+                        ("Filename", " | ".join(str(value) for value in filenames) or "Not found"),
+                        ("SHA-256", flagged_result.get("sha256", "Not found")),
+                        ("Content type", " | ".join(str(value) for value in content_types) or "Not found"),
+                        ("File size (bytes)", " | ".join(str(value) for value in sizes_bytes) or "Not found"),
+                        ("Malicious detections", flagged_result.get("malicious", 0)),
+                        ("Suspicious detections", flagged_result.get("suspicious", 0)),
+                        ("Harmless detections", flagged_result.get("harmless", 0)),
+                        ("Undetected", flagged_result.get("undetected", 0)),
+                        ("Last analysis date", flagged_result.get("last_analysis_date", "Not found")),
+                    ]
+                )
+                + "</table></article>"
+            )
+        content = [
+            '<details class="collapsible reputation-details" open>',
+            "<summary>Attachment Hash Reputation</summary>",
+            '<div class="collapsible-content">',
+            '<article class="card reputation-result"><table>'
+            + render_kv_rows(summary_rows)
+            + "</table></article>",
+        ]
+        if cards:
+            content.append("<h3>Flagged Attachments</h3>")
+            content.append("\n".join(cards))
+        content.append("</div></details>")
+        return "\n".join(content)
+
     def render_reputation_checks() -> str:
-        future_checks = (("Attachment Hash Reputation", "attachment_hash"),)
         sender_result = (
             reputation_checks.get("sender_ip", {})
             if isinstance(reputation_checks, dict)
             else {}
         )
         content = [
-            '<details class="collapsible reputation-details">',
+            '<details class="collapsible reputation-details" open>',
             "<summary>Sender IP Reputation</summary>",
             '<div class="collapsible-content">',
             render_reputation_result(sender_result),
@@ -1373,19 +1483,13 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 render_url_reputation(
                     reputation_checks.get("url", {}) if isinstance(reputation_checks, dict) else {}
                 ),
+                render_attachment_reputation(
+                    reputation_checks.get("attachment_hash", {})
+                    if isinstance(reputation_checks, dict)
+                    else {}
+                ),
             ]
         )
-        for label, key in future_checks:
-            result = reputation_checks.get(key, {}) if isinstance(reputation_checks, dict) else {}
-            content.extend(
-                [
-                    '<details class="collapsible reputation-details">',
-                    f"<summary>{html_escape_text(label)}</summary>",
-                    '<div class="collapsible-content">',
-                    render_reputation_result(result),
-                    "</div></details>",
-                ]
-            )
         return "\n".join(content)
 
     def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:

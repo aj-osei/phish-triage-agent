@@ -1,10 +1,17 @@
 """Coordinator for provider-backed reputation checks."""
 
+import re
 from typing import Dict, List
 from urllib.parse import urlparse, urlunparse
 
 from .abuseipdb import AbuseIPDBClient
-from .models import ReputationResult, URLReputationItem, URLReputationSummary
+from .models import (
+    AttachmentReputationItem,
+    AttachmentReputationSummary,
+    ReputationResult,
+    URLReputationItem,
+    URLReputationSummary,
+)
 from .virustotal import (
     VirusTotalURLClient,
     available_process_request_slots,
@@ -33,10 +40,10 @@ def build_unchecked_reputation_checks(sender_ip: str = "Not found") -> Dict[str,
             total_supported_urls=0,
             total_unique_urls=0,
         ).as_dict(),
-        "attachment_hash": ReputationResult(
-            category="Attachment Hash Reputation",
-            provider="Not configured",
-            status="Not checked yet - provider not configured",
+        "attachment_hash": AttachmentReputationSummary(
+            status="Attachment Hash Reputation: Not checked - reputation lookup not run",
+            total_normal_attachments=0,
+            total_unique_hashes=0,
         ).as_dict(),
     }
 
@@ -86,6 +93,45 @@ def prepare_url_reputation_targets(url_entries: object) -> tuple[int, int, List[
     return len(url_entries), supported_count, targets
 
 
+SHA256_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
+
+
+def prepare_attachment_reputation_targets(
+    attachments: object,
+) -> tuple[int, List[Dict[str, object]]]:
+    """Select non-empty normal attachments and de-duplicate their valid SHA-256 hashes."""
+    if not isinstance(attachments, list):
+        return 0, []
+
+    targets_by_hash: Dict[str, Dict[str, object]] = {}
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        sha256 = str(attachment.get("sha256", "")).lower()
+        size_bytes = attachment.get("size_bytes", 0)
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0:
+            continue
+        if not SHA256_PATTERN.fullmatch(sha256):
+            continue
+        target = targets_by_hash.setdefault(
+            sha256,
+            {
+                "sha256": sha256,
+                "filenames": [],
+                "content_types": [],
+                "sizes_bytes": [],
+            },
+        )
+        filename = str(attachment.get("filename", "Not found"))
+        content_type = str(attachment.get("content_type", "application/octet-stream"))
+        if filename not in target["filenames"]:
+            target["filenames"].append(filename)
+        if content_type not in target["content_types"]:
+            target["content_types"].append(content_type)
+        target["sizes_bytes"].append(size_bytes)
+    return len(attachments), list(targets_by_hash.values())
+
+
 class ReputationService:
     """Run report-time reputation checks without changing message parsing."""
 
@@ -98,13 +144,20 @@ class ReputationService:
         self.virustotal_client = virustotal_client or VirusTotalURLClient()
         self._sender_ip_cache: Dict[str, Dict[str, object]] = {}
         self._url_cache: Dict[str, URLReputationItem] = {}
+        self._attachment_cache: Dict[str, AttachmentReputationItem] = {}
 
     def check_email(self, summary: Dict[str, object]) -> Dict[str, Dict[str, object]]:
         """Run enabled providers and retain explicit future-provider placeholders."""
         sender_ip = str(summary.get("sender_ip", "Not found"))
         checks = build_unchecked_reputation_checks(sender_ip)
         checks["sender_ip"] = self.check_sender_ip(sender_ip)
-        checks["url"] = self.check_urls(summary.get("url_entries", [])).as_dict()
+        url_result, attachment_result = self._check_shared_virustotal_indicators(
+            summary.get("url_entries", []),
+            summary.get("attachments", []),
+            summary.get("inline_content", []),
+        )
+        checks["url"] = url_result.as_dict()
+        checks["attachment_hash"] = attachment_result.as_dict()
         return checks
 
     def check_sender_ip(self, sender_ip: str) -> Dict[str, object]:
@@ -112,6 +165,213 @@ class ReputationService:
         if sender_ip not in self._sender_ip_cache:
             self._sender_ip_cache[sender_ip] = self.abuseipdb_client.lookup_sender_ip(sender_ip).as_dict()
         return self._sender_ip_cache[sender_ip]
+
+    def check_attachments(
+        self, attachments: object, inline_content: object = None
+    ) -> AttachmentReputationSummary:
+        """Check attachment hashes alone while retaining the provider-wide rolling budget."""
+        _, result = self._check_shared_virustotal_indicators([], attachments, inline_content)
+        return result
+
+    def _check_shared_virustotal_indicators(
+        self, url_entries: object, attachments: object, inline_content: object
+    ) -> tuple[URLReputationSummary, AttachmentReputationSummary]:
+        """Alternate file-hash and URL lookups under one local VirusTotal request budget."""
+        total_extracted, total_supported, url_targets = prepare_url_reputation_targets(url_entries)
+        total_normal_attachments, attachment_targets = prepare_attachment_reputation_targets(attachments)
+        total_urls = len(url_targets)
+        total_hashes = len(attachment_targets)
+        inline_present = isinstance(inline_content, list) and bool(inline_content)
+
+        if not self.virustotal_client.is_configured:
+            return (
+                self._url_summary_without_lookup(total_extracted, total_supported, total_urls),
+                self._attachment_summary_without_lookup(
+                    total_normal_attachments, total_hashes, inline_present
+                ),
+            )
+
+        url_results: List[URLReputationItem] = []
+        attachment_results: List[AttachmentReputationItem] = []
+        url_queue = list(url_targets)
+        attachment_queue = list(attachment_targets)
+        requests_attempted = 0
+        budget = min(4, available_process_request_slots())
+        terminal_result: object | None = None
+        next_kind = "attachment"
+
+        while (url_queue or attachment_queue) and requests_attempted < budget and terminal_result is None:
+            if next_kind == "attachment" and attachment_queue:
+                kind, target = "attachment", attachment_queue.pop(0)
+            elif next_kind == "url" and url_queue:
+                kind, target = "url", url_queue.pop(0)
+            elif attachment_queue:
+                kind, target = "attachment", attachment_queue.pop(0)
+            else:
+                kind, target = "url", url_queue.pop(0)
+            next_kind = "url" if kind == "attachment" else "attachment"
+
+            if kind == "attachment":
+                sha256 = str(target["sha256"])
+                item = self._attachment_cache.get(sha256)
+                if item is None:
+                    record_process_request_attempt()
+                    requests_attempted += 1
+                    item = self.virustotal_client.lookup_file_hash(
+                        sha256,
+                        list(target["filenames"]),
+                        list(target["content_types"]),
+                        list(target["sizes_bytes"]),
+                    )
+                    self._attachment_cache[sha256] = item
+                attachment_results.append(item)
+            else:
+                lookup_url = str(target["lookup_url"])
+                item = self._url_cache.get(lookup_url)
+                if item is None:
+                    record_process_request_attempt()
+                    requests_attempted += 1
+                    item = self.virustotal_client.lookup_url(
+                        str(target["original_url"]), lookup_url, str(target["decoded_destination"])
+                    )
+                    self._url_cache[lookup_url] = item
+                url_results.append(item)
+
+            if item.stop_processing:
+                terminal_result = item
+
+        budget_exhausted = bool(url_queue or attachment_queue) and terminal_result is None
+        return (
+            self._summarize_urls(
+                total_extracted, total_supported, total_urls, url_results, requests_attempted,
+                terminal_result, budget_exhausted,
+            ),
+            self._summarize_attachments(
+                total_normal_attachments, total_hashes, attachment_results, requests_attempted,
+                terminal_result, budget_exhausted, inline_present,
+            ),
+        )
+
+    def _url_summary_without_lookup(
+        self, total_extracted: int, total_supported: int, total_urls: int
+    ) -> URLReputationSummary:
+        if total_extracted == 0:
+            return URLReputationSummary("URL Reputation: No URLs found", 0, 0, 0, complete=True)
+        if total_supported == 0:
+            return URLReputationSummary(
+                "URL Reputation: No supported HTTP or HTTPS URLs found",
+                total_extracted, 0, 0, complete=True,
+            )
+        return URLReputationSummary(
+            "URL Reputation: Not checked - API key not configured",
+            total_extracted, total_supported, total_urls, total_unchecked_urls=total_urls,
+        )
+
+    def _attachment_summary_without_lookup(
+        self, total_normal: int, total_hashes: int, inline_present: bool
+    ) -> AttachmentReputationSummary:
+        if total_normal == 0:
+            return AttachmentReputationSummary(
+                "Attachment Hash Reputation: Not checked - no file attachments found",
+                0, 0, complete=True, inline_content_present=inline_present,
+            )
+        if total_hashes == 0:
+            return AttachmentReputationSummary(
+                "Attachment Hash Reputation: Not checked - valid attachment hashes unavailable",
+                total_normal, 0, complete=True, inline_content_present=inline_present,
+            )
+        return AttachmentReputationSummary(
+            "Attachment Hash Reputation: Not checked - API key not configured",
+            total_normal, total_hashes, total_unchecked_hashes=total_hashes,
+            inline_content_present=inline_present,
+        )
+
+    def _summarize_urls(
+        self, total_extracted: int, total_supported: int, total_urls: int,
+        results: List[URLReputationItem], requests_attempted: int,
+        terminal_result: object | None, budget_exhausted: bool,
+    ) -> URLReputationSummary:
+        if total_extracted == 0 or total_supported == 0:
+            return self._url_summary_without_lookup(total_extracted, total_supported, total_urls)
+        checked = len(results)
+        successful = sum(item.status == "Lookup successful" for item in results)
+        no_report = sum(item.no_report for item in results)
+        failed = sum(item.failed for item in results)
+        flagged = [item for item in results if item.flagged]
+        unchecked = max(0, total_urls - checked)
+        partial = bool(unchecked or failed)
+        return URLReputationSummary(
+            status=self._build_url_status(
+                total_urls, checked, unchecked, successful, no_report, len(flagged), terminal_result, budget_exhausted
+            ),
+            total_extracted_urls=total_extracted,
+            total_supported_urls=total_supported,
+            total_unique_urls=total_urls,
+            total_api_requests_attempted=requests_attempted,
+            total_successfully_checked_urls=successful,
+            total_no_report_urls=no_report,
+            total_flagged_urls=len(flagged),
+            total_failed_urls=failed,
+            total_unchecked_urls=unchecked,
+            complete=not partial,
+            partial=partial,
+            rate_limit_reached=bool(terminal_result and getattr(terminal_result, "rate_limited", False)),
+            flagged_results=flagged,
+        )
+
+    def _summarize_attachments(
+        self, total_normal: int, total_hashes: int, results: List[AttachmentReputationItem],
+        requests_attempted: int, terminal_result: object | None, budget_exhausted: bool,
+        inline_present: bool,
+    ) -> AttachmentReputationSummary:
+        if total_normal == 0 or total_hashes == 0:
+            return self._attachment_summary_without_lookup(total_normal, total_hashes, inline_present)
+        checked = len(results)
+        successful = sum(item.status == "Lookup successful" for item in results)
+        no_report = sum(item.no_report for item in results)
+        failed = sum(item.failed for item in results)
+        flagged = [item for item in results if item.flagged]
+        unchecked = max(0, total_hashes - checked)
+        partial = bool(unchecked or failed)
+        return AttachmentReputationSummary(
+            status=self._build_attachment_status(
+                total_hashes, checked, unchecked, successful, no_report, len(flagged), terminal_result, budget_exhausted
+            ),
+            total_normal_attachments=total_normal,
+            total_unique_hashes=total_hashes,
+            total_api_requests_attempted=requests_attempted,
+            total_successfully_checked_hashes=successful,
+            total_no_report_hashes=no_report,
+            total_flagged_hashes=len(flagged),
+            total_failed_hashes=failed,
+            total_unchecked_hashes=unchecked,
+            complete=not partial,
+            partial=partial,
+            rate_limit_reached=bool(terminal_result and getattr(terminal_result, "rate_limited", False)),
+            inline_content_present=inline_present,
+            flagged_results=flagged,
+        )
+
+    @staticmethod
+    def _build_attachment_status(
+        total_hashes: int, checked: int, unchecked: int, successful: int, no_report: int,
+        flagged: int, terminal_result: object | None, budget_exhausted: bool,
+    ) -> str:
+        if terminal_result and getattr(terminal_result, "authentication_failed", False) and not (successful or no_report):
+            return "Attachment Hash Reputation: Not checked - VirusTotal authentication failed"
+        if no_report == checked and checked and not terminal_result:
+            return f"Attachment Hash Reputation: VirusTotal had no existing report for {checked} checked hashes"
+        if flagged and not (unchecked or terminal_result):
+            return f"Attachment Hash Reputation: {flagged} of {checked} checked hashes flagged by VirusTotal"
+        if terminal_result:
+            reason = str(getattr(terminal_result, "status", "provider unavailable")).replace("Lookup failed - ", "")
+            return f"Attachment Hash Reputation: Partially checked - {reason} after {checked} of {total_hashes} hashes"
+        if budget_exhausted or unchecked:
+            return (
+                f"Attachment Hash Reputation: {checked} of {total_hashes} attachment hashes checked - "
+                "none flagged in completed lookups; remaining hashes not checked because of the shared VirusTotal request limit"
+            )
+        return f"Attachment Hash Reputation: {checked} attachment hashes checked - none flagged by VirusTotal"
 
     def check_urls(self, url_entries: object) -> URLReputationSummary:
         """Check up to the available VirusTotal public-API budget for one report."""

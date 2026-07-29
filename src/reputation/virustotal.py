@@ -11,10 +11,11 @@ from typing import Deque
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .models import URLReputationItem
+from .models import AttachmentReputationItem, URLReputationItem
 
 
 VIRUSTOTAL_URL_API = "https://www.virustotal.com/api/v3/urls/"
+VIRUSTOTAL_FILE_API = "https://www.virustotal.com/api/v3/files/"
 VIRUSTOTAL_TIMEOUT_SECONDS = 5
 VIRUSTOTAL_MAX_REQUESTS_PER_REPORT = 4
 VIRUSTOTAL_REQUEST_WINDOW_SECONDS = 60
@@ -139,6 +140,78 @@ class VirusTotalURLClient:
 
         return self._normalize_response(original_url, lookup_url, decoded_destination, payload)
 
+    def lookup_file_hash(
+        self,
+        sha256: str,
+        filenames: list[str],
+        content_types: list[str],
+        sizes_bytes: list[int],
+    ) -> AttachmentReputationItem:
+        """Retrieve one existing file report by SHA-256 without uploading content."""
+        if not self.api_key:
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes, "Not checked - API key not configured"
+            )
+
+        request = Request(
+            VIRUSTOTAL_FILE_API + sha256,
+            headers={
+                "Accept": "application/json",
+                "x-apikey": self.api_key,
+                "User-Agent": "Phish-Pharm/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            if error.code == 404:
+                return AttachmentReputationItem(
+                    sha256=sha256,
+                    filenames=filenames,
+                    content_types=content_types,
+                    sizes_bytes=sizes_bytes,
+                    provider="VirusTotal",
+                    status="No existing VirusTotal file report found",
+                    no_report=True,
+                )
+            if error.code in (401, 403):
+                return self._file_failure(
+                    sha256, filenames, content_types, sizes_bytes,
+                    "Lookup failed - VirusTotal authentication failed",
+                    stop_processing=True, authentication_failed=True,
+                )
+            if error.code == 429:
+                return self._file_failure(
+                    sha256, filenames, content_types, sizes_bytes,
+                    "Lookup failed - VirusTotal rate limit reached",
+                    stop_processing=True, rate_limited=True,
+                )
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes,
+                "Lookup failed - provider returned an error", stop_processing=True,
+            )
+        except (socket.timeout, TimeoutError):
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes,
+                "Lookup failed - request timed out", stop_processing=True,
+            )
+        except URLError as error:
+            status = (
+                "Lookup failed - request timed out"
+                if isinstance(error.reason, (socket.timeout, TimeoutError))
+                else "Lookup failed - network unavailable"
+            )
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes, status, stop_processing=True
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes,
+                "Lookup failed - provider returned malformed response", stop_processing=True,
+            )
+        return self._normalize_file_response(sha256, filenames, content_types, sizes_bytes, payload)
+
     @staticmethod
     def _failure(
         original_url: str,
@@ -153,6 +226,30 @@ class VirusTotalURLClient:
             original_url=original_url,
             lookup_url=lookup_url,
             decoded_destination=decoded_destination,
+            provider="VirusTotal",
+            status=status,
+            failed=True,
+            stop_processing=stop_processing,
+            rate_limited=rate_limited,
+            authentication_failed=authentication_failed,
+        )
+
+    @staticmethod
+    def _file_failure(
+        sha256: str,
+        filenames: list[str],
+        content_types: list[str],
+        sizes_bytes: list[int],
+        status: str,
+        stop_processing: bool = False,
+        rate_limited: bool = False,
+        authentication_failed: bool = False,
+    ) -> AttachmentReputationItem:
+        return AttachmentReputationItem(
+            sha256=sha256,
+            filenames=filenames,
+            content_types=content_types,
+            sizes_bytes=sizes_bytes,
             provider="VirusTotal",
             status=status,
             failed=True,
@@ -204,6 +301,50 @@ class VirusTotalURLClient:
             timeout=self._statistic(numeric_statistics, "timeout"),
             total_engines=sum(numeric_statistics.values()),
             last_analysis_date=self._format_analysis_date(last_analysis_value),
+            report_id=str(data.get("id") or "Not found"),
+        )
+
+    def _normalize_file_response(
+        self,
+        sha256: str,
+        filenames: list[str],
+        content_types: list[str],
+        sizes_bytes: list[int],
+        payload: object,
+    ) -> AttachmentReputationItem:
+        """Validate an existing file report and retain only safe normalized fields."""
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes,
+                "Lookup failed - provider returned malformed response", stop_processing=True,
+            )
+        data = payload["data"]
+        attributes = data.get("attributes")
+        if not isinstance(attributes, dict) or not isinstance(attributes.get("last_analysis_stats"), dict):
+            return self._file_failure(
+                sha256, filenames, content_types, sizes_bytes,
+                "Lookup failed - provider returned malformed response", stop_processing=True,
+            )
+        statistics = attributes["last_analysis_stats"]
+        numeric_statistics = {
+            str(name): value
+            for name, value in statistics.items()
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        return AttachmentReputationItem(
+            sha256=sha256,
+            filenames=filenames,
+            content_types=content_types,
+            sizes_bytes=sizes_bytes,
+            provider="VirusTotal",
+            status="Lookup successful",
+            malicious=self._statistic(numeric_statistics, "malicious"),
+            suspicious=self._statistic(numeric_statistics, "suspicious"),
+            harmless=self._statistic(numeric_statistics, "harmless"),
+            undetected=self._statistic(numeric_statistics, "undetected"),
+            timeout=self._statistic(numeric_statistics, "timeout"),
+            total_engines=sum(numeric_statistics.values()),
+            last_analysis_date=self._format_analysis_date(attributes.get("last_analysis_date")),
             report_id=str(data.get("id") or "Not found"),
         )
 

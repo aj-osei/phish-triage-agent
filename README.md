@@ -12,7 +12,7 @@ Current MVP supports:
 - HTML triage reports
 - Quick Checks summary
 - URL and Microsoft Safe Links extraction
-- Optional VirusTotal existing-report URL reputation lookups
+- Optional VirusTotal existing-report URL and attachment-hash reputation lookups
 - SPF, DKIM, and DMARC summaries
 - Attachment and inline content summaries
 - Received-header hop details
@@ -55,7 +55,7 @@ The CLI also supports `--format md` and `--format both`.
 
 ## Reputation API Configuration
 
-Sender-IP and URL reputation checks are optional. Set API keys before launching the tool or the watch-mode batch file; never place real keys in source files, reports, or GitHub.
+Sender-IP and VirusTotal reputation checks are optional. Set API keys before launching the tool or the watch-mode batch file; never place real keys in source files, reports, or GitHub.
 
 ### AbuseIPDB
 
@@ -71,9 +71,11 @@ PowerShell:
 $env:ABUSEIPDB_API_KEY="your_key_here"
 ```
 
-### VirusTotal URL Reputation
+### VirusTotal URL and Attachment Hash Reputation
 
-VirusTotal lookups retrieve existing URL reports only. They do not submit URLs for scanning and do not visit extracted websites. The current version makes no more than four URL lookup attempts per report, and a public API key may have a limited quota. Emails with additional URLs can show partial results; URLs with no detections are not described as safe or clean.
+VirusTotal lookups retrieve existing URL and file-hash reports only. URLs are not visited or submitted for scanning. For normal file attachments, the tool sends only the existing SHA-256 hash to retrieve a report; it never uploads, rescans, opens, or executes the attachment. Inline and embedded content is excluded.
+
+URL and attachment-hash checks share one rolling public-API budget of at most four total requests per report. When both are available, lookups alternate in deterministic order beginning with an attachment hash. Reports can therefore show partial coverage. A zero-detection result does not prove a URL or file is safe, and a real API key must never be committed to GitHub.
 
 Windows Command Prompt:
 
@@ -98,7 +100,7 @@ python -m py_compile src/main.py tests/test_url_extraction.py
 
 - The tool does not open URLs.
 - The tool does not render unsafe email HTML.
-- The tool does not send URLs, files, or attachments to external services by default.
+- Optional reputation checks send only URLs and attachment SHA-256 hashes to the configured providers; attachments are never uploaded.
 - Analyst review is still required.
 - Do not commit real phishing emails, tickets, credentials, or sensitive data.
 
@@ -113,6 +115,6 @@ python -m py_compile src/main.py tests/test_url_extraction.py
 ## Possible Future Improvements
 
 - Package as an executable so Python is not required.
-- Add domain and attachment-hash reputation providers.
+- Add a domain reputation provider.
 - Add more sample emails and tests.
 - Improve handling of legitimate third-party/bounce sender patterns.
