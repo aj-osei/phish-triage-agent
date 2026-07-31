@@ -2,16 +2,19 @@
 
 import re
 from typing import Dict, List
+from email.utils import parseaddr
 from urllib.parse import urlparse, urlunparse
 
 from .abuseipdb import AbuseIPDBClient
 from .models import (
     AttachmentReputationItem,
     AttachmentReputationSummary,
+    DomainRegistrationSummary,
     ReputationResult,
     URLReputationItem,
     URLReputationSummary,
 )
+from .rdap import RDAPClient, normalize_registered_domain
 from .virustotal import (
     VirusTotalURLClient,
     available_process_request_slots,
@@ -30,9 +33,9 @@ def build_unchecked_reputation_checks(sender_ip: str = "Not found") -> Dict[str,
             details=sender_details,
         ).as_dict(),
         "domain": ReputationResult(
-            category="Domain Reputation",
-            provider="Not configured",
-            status="Not checked yet - provider not configured",
+            category="Domain Registration",
+            provider="RDAP",
+            status="Not checked - reputation lookup not run",
         ).as_dict(),
         "url": URLReputationSummary(
             status="URL Reputation: Not checked - reputation lookup not run",
@@ -132,6 +135,24 @@ def prepare_attachment_reputation_targets(
     return len(attachments), list(targets_by_hash.values())
 
 
+def prepare_domain_registration_targets(summary: Dict[str, object]) -> List[Dict[str, object]]:
+    """Collect observed hostnames from approved email fields in first-seen order."""
+    observed: Dict[str, Dict[str, object]] = {}
+    candidates: List[tuple[str, str]] = []
+    for label, key in (("From", "sender"), ("Reply-To", "reply_to")):
+        address = parseaddr(str(summary.get(key, "")))[1]
+        if "@" in address:
+            candidates.append((label, address.rsplit("@", 1)[1]))
+    for label, hostname in candidates:
+        normalized = normalize_registered_domain(hostname)
+        if not normalized: continue
+        observed_hostname, registered_domain = normalized
+        target = observed.setdefault(registered_domain, {"registered_domain": registered_domain, "observed_hostnames": [], "source_labels": []})
+        if observed_hostname not in target["observed_hostnames"]: target["observed_hostnames"].append(observed_hostname)
+        if label not in target["source_labels"]: target["source_labels"].append(label)
+    return list(observed.values())
+
+
 class ReputationService:
     """Run report-time reputation checks without changing message parsing."""
 
@@ -139,18 +160,22 @@ class ReputationService:
         self,
         abuseipdb_client: AbuseIPDBClient | None = None,
         virustotal_client: VirusTotalURLClient | None = None,
+        rdap_client: RDAPClient | None = None,
     ):
         self.abuseipdb_client = abuseipdb_client or AbuseIPDBClient()
         self.virustotal_client = virustotal_client or VirusTotalURLClient()
         self._sender_ip_cache: Dict[str, Dict[str, object]] = {}
         self._url_cache: Dict[str, URLReputationItem] = {}
         self._attachment_cache: Dict[str, AttachmentReputationItem] = {}
+        self.rdap_client = rdap_client or RDAPClient()
+        self._domain_cache: Dict[str, object] = {}
 
     def check_email(self, summary: Dict[str, object]) -> Dict[str, Dict[str, object]]:
         """Run enabled providers and retain explicit future-provider placeholders."""
         sender_ip = str(summary.get("sender_ip", "Not found"))
         checks = build_unchecked_reputation_checks(sender_ip)
         checks["sender_ip"] = self.check_sender_ip(sender_ip)
+        checks["domain"] = self.check_domains(summary).as_dict()
         url_result, attachment_result = self._check_shared_virustotal_indicators(
             summary.get("url_entries", []),
             summary.get("attachments", []),
@@ -159,6 +184,25 @@ class ReputationService:
         checks["url"] = url_result.as_dict()
         checks["attachment_hash"] = attachment_result.as_dict()
         return checks
+
+    def check_domains(self, summary: Dict[str, object]) -> DomainRegistrationSummary:
+        targets = prepare_domain_registration_targets(summary)
+        total = len(targets)
+        results = []
+        for target in targets[:10]:
+            domain = str(target["registered_domain"])
+            result = self._domain_cache.get(domain)
+            if result is None:
+                result = self.rdap_client.lookup_domain(domain, list(target["observed_hostnames"]), list(target["source_labels"]))
+                self._domain_cache[domain] = result
+            results.append(result)
+        checked, found, failed = len(results), sum(not item.failed and not item.no_record for item in results), sum(item.failed for item in results)
+        unchecked = total - checked
+        if total == 0: status = "Domain Registration: Not checked - no supported domains found"
+        elif failed: status = "Domain Registration: Partially checked - provider request failed"
+        elif unchecked: status = "Domain Registration: Partially checked - lookup limit reached"
+        else: status = "Domain Registration: Lookup successful"
+        return DomainRegistrationSummary(status, total, checked, found, unchecked, failed, complete=not (failed or unchecked), results=results)
 
     def check_sender_ip(self, sender_ip: str) -> Dict[str, object]:
         """Avoid duplicate AbuseIPDB requests for the same IP in one service instance."""

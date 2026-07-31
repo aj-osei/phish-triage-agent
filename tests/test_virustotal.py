@@ -381,16 +381,13 @@ class VirusTotalURLTests(unittest.TestCase):
         report = main.build_html_report(summary)
 
         self.assertIn(
-            '<details class="collapsible reputation-details" open>\n<summary>URL Reputation</summary>',
-            report,
+            '<details class="collapsible reputation-details">\n<summary>URL Reputation</summary>', report
         )
         self.assertIn(
-            '<details class="collapsible reputation-details" open>\n<summary>Sender IP Reputation</summary>',
-            report,
+            '<details class="collapsible reputation-details">\n<summary>Sender IP Reputation</summary>', report
         )
         self.assertIn(
-            '<details class="collapsible reputation-details">\n<summary>Domain Reputation</summary>',
-            report,
+            '<details class="collapsible reputation-details">\n<summary>Domain Registration</summary>', report
         )
         self.assertIn("<h3>Flagged URLs</h3>", report)
         self.assertIn("<th>Detection result</th><td>1 URL flagged by VirusTotal vendors</td>", report)
@@ -679,8 +676,7 @@ class VirusTotalAttachmentTests(unittest.TestCase):
         report = main.build_html_report(summary)
 
         self.assertIn(
-            '<details class="collapsible reputation-details" open>\n<summary>Attachment Hash Reputation</summary>',
-            report,
+            '<details class="collapsible reputation-details">\n<summary>Attachment Hash Reputation</summary>', report
         )
         self.assertIn("<th>Attachments checked</th><td>2 of 2</td>", report)
         self.assertIn("1 attachment flagged by VirusTotal vendors", report)

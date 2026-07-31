@@ -13,6 +13,7 @@ Current MVP supports:
 - Quick Checks summary
 - URL and Microsoft Safe Links extraction
 - Optional VirusTotal existing-report URL and attachment-hash reputation lookups
+- RDAP domain-registration context for email and URL domains
 - SPF, DKIM, and DMARC summaries
 - Attachment and inline content summaries
 - Received-header hop details
@@ -88,6 +89,10 @@ PowerShell:
 ```powershell
 $env:VIRUSTOTAL_API_KEY="your_key_here"
 ```
+
+### Domain Registration Context
+
+Domain registration data is retrieved through RDAP; no additional API key is required. The tool uses the IANA RDAP bootstrap registry to discover the authoritative provider, and does not visit or render represented websites. Up to 10 unique registered domains per report are checked. Domain age is an analyst indicator, not a verdict; privacy-redacted registration data is normal. RDAP failures do not prevent report generation. DomainTools enrichment may be added later if approved.
 
 ## Running Tests
 

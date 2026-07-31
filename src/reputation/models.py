@@ -209,3 +209,53 @@ class AttachmentReputationSummary:
             "inline_content_present": self.inline_content_present,
             "flagged_results": [result.as_dict() for result in self.flagged_results],
         }
+
+
+@dataclass
+class DomainRegistrationResult:
+    registered_domain: str
+    observed_hostnames: List[str]
+    source_labels: List[str]
+    provider: str
+    status: str
+    registrar: str = "Not found"
+    registration_date: str = "Registration date unavailable"
+    updated_date: str = "Not found"
+    expiration_date: str = "Not found"
+    domain_age: str = "Not calculated"
+    recently_registered: bool = False
+    domain_status: List[str] = field(default_factory=list)
+    nameservers: List[str] = field(default_factory=list)
+    country: str = "Not found"
+    handle: str = "Not found"
+    no_record: bool = False
+    failed: bool = False
+
+    def as_dict(self) -> Dict[str, object]:
+        return self.__dict__.copy()
+
+
+@dataclass
+class DomainRegistrationSummary:
+    status: str
+    total_unique_domains: int
+    total_checked_domains: int = 0
+    total_found_domains: int = 0
+    total_unchecked_domains: int = 0
+    total_failed_domains: int = 0
+    complete: bool = False
+    results: List[DomainRegistrationResult] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "category": "Domain Registration",
+            "provider": "RDAP",
+            "status": self.status,
+            "total_unique_domains": self.total_unique_domains,
+            "total_checked_domains": self.total_checked_domains,
+            "total_found_domains": self.total_found_domains,
+            "total_unchecked_domains": self.total_unchecked_domains,
+            "total_failed_domains": self.total_failed_domains,
+            "complete": self.complete,
+            "results": [result.as_dict() for result in self.results],
+        }

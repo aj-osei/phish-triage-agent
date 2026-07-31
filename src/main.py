@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import html
 import re
 import sys
@@ -1178,6 +1179,19 @@ def build_html_report(summary: Dict[str, object]) -> str:
             )
         return "\n".join(rows)
 
+    def format_reputation_date(value: object) -> str:
+        """Format provider dates for display without changing stored values."""
+        text = str(value or "").strip()
+        if not text or text in {"Not found", "Registration date unavailable", "Unavailable"}:
+            return "Unavailable"
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%m/%d/%Y")
+        except ValueError:
+            try:
+                return parsedate_to_datetime(text).strftime("%m/%d/%Y")
+            except (TypeError, ValueError, IndexError):
+                return "Unavailable"
+
     def render_empty_or_text_list(values: List[str]) -> str:
         if not values:
             return '<p class="muted">None</p>'
@@ -1233,7 +1247,16 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ("Lookup status", result.get("status", "Not checked")),
             ("Lookup provider", result.get("provider", "Not configured")),
         ]
-        rows.extend((str(label), value) for label, value in details.items())
+        if result.get("category") == "Sender IP Reputation":
+            for label in ("IP address", "Abuse confidence score", "Total reports"):
+                if label in details:
+                    rows.append((label, details[label]))
+            for label in ("Country code", "ISP", "Domain", "Usage type", "Last reported date"):
+                value = details.get(label)
+                if value and value != "Not found":
+                    rows.append((label, format_reputation_date(value) if label == "Last reported date" else value))
+        else:
+            rows.extend((str(label), value) for label, value in details.items())
         return '<article class="card reputation-result"><table>' + render_kv_rows(rows) + "</table></article>"
 
     def render_url_reputation(result: object) -> str:
@@ -1324,7 +1347,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
                     ("Suspicious detections", flagged_result.get("suspicious", 0)),
                     ("Harmless detections", flagged_result.get("harmless", 0)),
                     ("Undetected", flagged_result.get("undetected", 0)),
-                    ("Last analysis date", flagged_result.get("last_analysis_date", "Not found")),
+                    ("Last analysis date", format_reputation_date(flagged_result.get("last_analysis_date"))),
                 ]
             )
             cards.append(
@@ -1335,7 +1358,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 + "</table></article>"
             )
         content = [
-            '<details class="collapsible reputation-details" open>',
+            '<details class="collapsible reputation-details">',
             "<summary>URL Reputation</summary>",
             '<div class="collapsible-content">',
             '<article class="card reputation-result"><table>'
@@ -1440,13 +1463,13 @@ def build_html_report(summary: Dict[str, object]) -> str:
                         ("Suspicious detections", flagged_result.get("suspicious", 0)),
                         ("Harmless detections", flagged_result.get("harmless", 0)),
                         ("Undetected", flagged_result.get("undetected", 0)),
-                        ("Last analysis date", flagged_result.get("last_analysis_date", "Not found")),
+                        ("Last analysis date", format_reputation_date(flagged_result.get("last_analysis_date"))),
                     ]
                 )
                 + "</table></article>"
             )
         content = [
-            '<details class="collapsible reputation-details" open>',
+            '<details class="collapsible reputation-details">',
             "<summary>Attachment Hash Reputation</summary>",
             '<div class="collapsible-content">',
             '<article class="card reputation-result"><table>'
@@ -1459,6 +1482,67 @@ def build_html_report(summary: Dict[str, object]) -> str:
         content.append("</div></details>")
         return "\n".join(content)
 
+    def render_domain_registration(result: object) -> str:
+        if not isinstance(result, dict): result = {}
+        total = int(result.get("total_unique_domains", 0) or 0)
+        checked = int(result.get("total_checked_domains", 0) or 0)
+        found = int(result.get("total_found_domains", 0) or 0)
+        status = str(result.get("status", "Domain Registration: Not checked - no supported domains found"))
+        if "no supported" in status.lower(): lookup_status = "Not checked - no supported domains found"
+        elif "partially" in status.lower(): lookup_status = status.removeprefix("Domain Registration: ")
+        elif "failed" in status.lower(): lookup_status = "Lookup failed - provider unavailable"
+        else: lookup_status = "Lookup successful"
+        registration_result = (
+            f"Registration data found for {found} domains" if found else
+            ("Registration data found for 0 completed lookups" if checked else "No domain registration lookups performed")
+        )
+
+        def render_domain_rows(rows: List[tuple[str, object]]) -> str:
+            rendered = []
+            for label, value in rows:
+                values = value if isinstance(value, list) else [value]
+                value_html = "".join(
+                    '<div class="domain-value">' + html_escape_text(item) + "</div>"
+                    for item in values
+                )
+                rendered.append(
+                    "<tr><th>" + html_escape_text(label) + "</th><td>" + value_html + "</td></tr>"
+                )
+            return "\n".join(rendered)
+
+        def useful(value: object) -> bool:
+            return bool(value) and str(value) not in {"Not found", "Not calculated", ""}
+
+        def display_status(value: object) -> str:
+            return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(value)).lower()
+
+        cards = []
+        for item in result.get("results", []):
+            if not isinstance(item, dict): continue
+            registered_domain = item.get("registered_domain", "Not found")
+            rows = [
+                ("Domain", registered_domain),
+                ("Found in", item.get("source_labels", []) or ["Not found"]),
+            ]
+            if item.get("status") != "Lookup successful":
+                rows.append(("Lookup status", item.get("status", "Not found")))
+                cards.append('<article class="card reputation-result domain-information"><h3>Domain Information: ' + html_escape_text(registered_domain) + "</h3><table>" + render_domain_rows(rows) + "</table></article>")
+                continue
+            if useful(item.get("registrar")): rows.append(("Registrar", item["registrar"]))
+            rows.append(("Registered on", format_reputation_date(item.get("registration_date"))))
+            if useful(item.get("domain_age")): rows.append(("Domain age", item["domain_age"]))
+            if useful(item.get("expiration_date")): rows.append(("Expires on", format_reputation_date(item["expiration_date"])))
+            if item.get("domain_status"): rows.append(("Status", [display_status(value) for value in item["domain_status"]]))
+            recent = ' <span class="recent-domain">Recently registered</span>' if item.get("recently_registered") else ""
+            cards.append('<article class="card reputation-result domain-information"><h3>Domain Information: ' + html_escape_text(registered_domain) + recent + "</h3><table>" + render_domain_rows(rows) + "</table></article>")
+        return "\n".join([
+            '<details class="collapsible reputation-details">',
+            "<summary>Domain Registration</summary>", '<div class="collapsible-content">',
+            '<article class="card reputation-result"><table>' + render_kv_rows([
+                ("Lookup status", lookup_status), ("Lookup provider", result.get("provider", "RDAP")),
+                ("Domains checked", f"{checked} of {total}"), ("Registration result", registration_result),
+            ]) + "</table></article>", "\n".join(cards), "</div></details>"])
+
     def render_reputation_checks() -> str:
         sender_result = (
             reputation_checks.get("sender_ip", {})
@@ -1466,20 +1550,15 @@ def build_html_report(summary: Dict[str, object]) -> str:
             else {}
         )
         content = [
-            '<details class="collapsible reputation-details" open>',
+            '<details class="collapsible reputation-details">',
             "<summary>Sender IP Reputation</summary>",
             '<div class="collapsible-content">',
             render_reputation_result(sender_result),
             "</div></details>",
         ]
-        domain_result = reputation_checks.get("domain", {}) if isinstance(reputation_checks, dict) else {}
         content.extend(
             [
-                '<details class="collapsible reputation-details">',
-                "<summary>Domain Reputation</summary>",
-                '<div class="collapsible-content">',
-                render_reputation_result(domain_result),
-                "</div></details>",
+                render_domain_registration(reputation_checks.get("domain", {}) if isinstance(reputation_checks, dict) else {}),
                 render_url_reputation(
                     reputation_checks.get("url", {}) if isinstance(reputation_checks, dict) else {}
                 ),
@@ -1627,6 +1706,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .summary-table th, .card th { width: 235px; color: #334e68; background: #f8fafc; font-weight: 700; }
         .card { border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; margin-top: 12px; background: #fff; }
         .card h3 { margin: 0; padding: 11px 14px; background: #f1f6fb; color: #334e68; font-size: 15px; }
+        .domain-information { margin-top: 14px; }
+        .domain-value + .domain-value { margin-top: 4px; }
+        .recent-domain { display: inline-block; margin-left: 8px; padding: 2px 7px; border-radius: 999px; background: #fff3d6; color: #7a4b00; font-size: 12px; font-weight: 600; }
         .card-meta { color: #627d98; font-size: 0.85em; font-weight: 400; }
         .card table { margin: 0; }
         .technical-list { margin: 0; padding-left: 20px; }
