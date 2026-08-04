@@ -4,7 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from email.message import EmailMessage
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -211,6 +211,122 @@ class URLExtractionTests(unittest.TestCase):
         self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
         self.assertEqual(options["report_format"], "both")
 
+    def test_cli_parses_readiness_check_options(self) -> None:
+        options = main.parse_cli_args(["--check", "--watch", "samples", "--output", "custom_reports"])
+
+        self.assertEqual(options["mode"], "check")
+        self.assertEqual(options["watch_folder"], Path("samples").resolve())
+        self.assertEqual(options["output_folder"], Path("custom_reports").resolve())
+
+    def test_watch_readiness_reports_configuration_without_printing_keys(self) -> None:
+        watch_folder = Path("samples").resolve()
+        output_folder = Path("reports").resolve()
+        secret_abuseipdb = "abuseipdb-secret-value"
+        secret_virustotal = "virustotal-secret-value"
+
+        with patch.dict(
+            main.os.environ,
+            {
+                "ABUSEIPDB_API_KEY": secret_abuseipdb,
+                "VIRUSTOTAL_API_KEY": secret_virustotal,
+            },
+            clear=False,
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                ready = main.print_watch_readiness(watch_folder, output_folder)
+
+        output = console_output.getvalue()
+        self.assertTrue(ready)
+        self.assertIn(f"Phish Pharm {main.PROJECT_VERSION}", output)
+        self.assertIn("Python:              Ready -", output)
+        self.assertIn("AbuseIPDB:           Configured", output)
+        self.assertIn("VirusTotal:          Configured", output)
+        self.assertIn("RDAP:                Ready - no API key required", output)
+        self.assertNotIn(secret_abuseipdb, output)
+        self.assertNotIn(secret_virustotal, output)
+
+    def test_watch_readiness_creates_folders_and_allows_missing_keys(self) -> None:
+        watch_folder = Mock()
+        watch_folder.is_dir.return_value = True
+        watch_folder.__str__ = Mock(return_value="C:\\resolved\\Inbox")
+        output_folder = Mock()
+        output_folder.is_dir.return_value = True
+        output_folder.__str__ = Mock(return_value="C:\\resolved\\Reports")
+        with patch.dict(
+            main.os.environ,
+            {"ABUSEIPDB_API_KEY": "", "VIRUSTOTAL_API_KEY": ""},
+            clear=False,
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                ready = main.print_watch_readiness(watch_folder, output_folder)
+
+        output = console_output.getvalue()
+        self.assertTrue(ready)
+        watch_folder.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        output_folder.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        self.assertIn("Not configured - sender IP reputation will be skipped", output)
+        self.assertIn("Not configured - URL and attachment reputation will be skipped", output)
+
+    def test_watch_readiness_stops_when_inbox_cannot_be_prepared(self) -> None:
+        failed_folder = Mock()
+        failed_folder.mkdir.side_effect = OSError("access denied")
+        failed_folder.__str__ = Mock(return_value="C:\\blocked\\Inbox")
+        ready_folder = Path("samples").resolve()
+
+        console_output = io.StringIO()
+        with redirect_stdout(console_output):
+            ready = main.print_watch_readiness(failed_folder, ready_folder)
+
+        self.assertFalse(ready)
+        self.assertIn("Inbox folder:        Failed - could not create folder", console_output.getvalue())
+        self.assertIn("Watcher:             Not started", console_output.getvalue())
+
+    def test_main_starts_watcher_once_when_keys_are_missing(self) -> None:
+        options = {
+            "mode": "watch",
+            "watch_folder": Path("samples").resolve(),
+            "output_folder": Path("reports").resolve(),
+            "report_format": "html",
+        }
+        with (
+            patch.object(main, "parse_cli_args", return_value=options),
+            patch.object(main, "run_watch_mode") as run_watch_mode,
+            patch.dict(
+                main.os.environ,
+                {"ABUSEIPDB_API_KEY": "", "VIRUSTOTAL_API_KEY": ""},
+                clear=False,
+            ),
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                main.main()
+
+        output = console_output.getvalue()
+        run_watch_mode.assert_called_once_with(
+            options["watch_folder"], options["output_folder"], "html"
+        )
+        self.assertEqual(output.count(f"Phish Pharm {main.PROJECT_VERSION}"), 1)
+        self.assertIn("Not configured - sender IP reputation will be skipped", output)
+        self.assertIn("Not configured - URL and attachment reputation will be skipped", output)
+
+    def test_main_does_not_start_watcher_when_readiness_fails(self) -> None:
+        options = {
+            "mode": "watch",
+            "watch_folder": Path("samples").resolve(),
+            "output_folder": Path("reports").resolve(),
+            "report_format": "html",
+        }
+        with (
+            patch.object(main, "parse_cli_args", return_value=options),
+            patch.object(main, "print_watch_readiness", return_value=False),
+            patch.object(main, "run_watch_mode") as run_watch_mode,
+        ):
+            main.main()
+
+        run_watch_mode.assert_not_called()
+
     def test_paired_report_paths_use_the_same_available_suffix(self) -> None:
         existing_names = {
             "suspicious_report.md",
@@ -274,7 +390,8 @@ class URLExtractionTests(unittest.TestCase):
 
         self.assertEqual(process_file.call_count, 2)
         process_file.assert_called_with(new_file.resolve(), output_folder, "both")
-        self.assertIn("Watching folder:", console_output.getvalue())
+        self.assertIn("Watcher:             Running", console_output.getvalue())
+        self.assertIn(str(watch_folder), console_output.getvalue())
         self.assertIn("New .eml file detected: new_email.eml", console_output.getvalue())
         self.assertIn("new_email_report_2.md", console_output.getvalue())
         self.assertIn("Stopped watching folder.", console_output.getvalue())

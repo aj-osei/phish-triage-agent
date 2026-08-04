@@ -54,6 +54,12 @@ python src/main.py --watch inbox --output reports --format html
 
 The CLI also supports `--format md` and `--format both`.
 
+Use `python src/main.py --check` to print watch-folder, Python, and reputation-provider
+readiness without starting the watcher or making external requests. The Windows launcher
+shows the same check automatically. Missing AbuseIPDB or VirusTotal keys do not stop local
+parsing; the related reputation checks are skipped. RDAP needs no API key, and key values are
+never displayed.
+
 ## Reputation API Configuration
 
 Sender-IP and VirusTotal reputation checks are optional. Set API keys before launching the tool or the watch-mode batch file; never place real keys in source files, reports, or GitHub.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import html
+import os
 import re
 import sys
 import hashlib
@@ -17,7 +18,16 @@ from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qs, unquote, urlparse
 
-from reputation import ReputationService, build_unchecked_reputation_checks
+try:
+    from reputation import ReputationService, build_unchecked_reputation_checks
+except ModuleNotFoundError as error:
+    if error.name == "tldextract":
+        raise SystemExit(
+            "Required dependency 'tldextract' is unavailable. Install project dependencies with:\n"
+            "python -m pip install -r requirements.txt"
+        ) from error
+    raise
+from version import PROJECT_VERSION
 
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
@@ -55,6 +65,74 @@ def resolve_default_output_folder() -> Path:
     return project_root / "reports"
 
 
+def prepare_watch_folder(folder_path: Path) -> tuple[bool, str]:
+    """Ensure a watch-mode folder exists without raising a terminal traceback."""
+    try:
+        folder_path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False, "Failed - could not create folder"
+
+    if not folder_path.is_dir():
+        return False, "Failed - path is not a folder"
+    return True, "Ready"
+
+
+def get_python_version() -> str:
+    """Return the version of the Python process already running this tool."""
+    return ".".join(str(part) for part in sys.version_info[:3])
+
+
+def print_watch_readiness(
+    watch_folder: Path, output_folder: Path, start_watcher: bool = True
+) -> bool:
+    """Print one local watch-mode readiness summary and prepare its folders."""
+    inbox_ready, inbox_status = prepare_watch_folder(watch_folder)
+    reports_ready, reports_status = prepare_watch_folder(output_folder)
+    abuseipdb_configured = bool(os.environ.get("ABUSEIPDB_API_KEY", "").strip())
+    virustotal_configured = bool(os.environ.get("VIRUSTOTAL_API_KEY", "").strip())
+
+    print("=" * 40)
+    print(f" Phish Pharm {PROJECT_VERSION}")
+    print("=" * 40)
+    print()
+    print(f"Python:              Ready - {get_python_version()}")
+    print(f"Inbox folder:        {inbox_status}")
+    print(f"Reports folder:      {reports_status}")
+    print(
+        "AbuseIPDB:           "
+        + (
+            "Configured"
+            if abuseipdb_configured
+            else "Not configured - sender IP reputation will be skipped"
+        )
+    )
+    print(
+        "VirusTotal:          "
+        + (
+            "Configured"
+            if virustotal_configured
+            else "Not configured - URL and attachment reputation will be skipped"
+        )
+    )
+    print("RDAP:                Ready - no API key required")
+    print()
+
+    if not inbox_ready or not reports_ready:
+        print("Watcher:             Not started - folder preparation failed")
+        if not inbox_ready:
+            print(f"Inbox path:          {watch_folder}")
+        if not reports_ready:
+            print(f"Reports path:        {output_folder}")
+        return False
+
+    print(
+        "Watcher:             Starting"
+        if start_watcher
+        else "Watcher:             Not started - readiness check complete"
+    )
+    return True
+
+
 def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
     """Parse manual or watch-mode triage options without processing input."""
     parser = argparse.ArgumentParser(
@@ -71,6 +149,11 @@ def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
         help="Watch one folder for newly added .eml files.",
     )
     parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Show local watch-mode readiness and exit without processing email.",
+    )
+    parser.add_argument(
         "--output",
         default=str(resolve_default_output_folder()),
         help="Folder where reports are written (default: reports/).",
@@ -85,12 +168,19 @@ def parse_cli_args(args: List[str] | None = None) -> Dict[str, object]:
     parsed_args = parser.parse_args(args)
     if parsed_args.watch and parsed_args.input_path:
         parser.error("Use either an input path or --watch <folder>, not both.")
+    if parsed_args.check and parsed_args.input_path:
+        parser.error("Use --check with optional --watch/--output options, not an input path.")
 
     output_folder = Path(parsed_args.output).expanduser().resolve()
+    if parsed_args.check:
+        return {
+            "mode": "check",
+            "watch_folder": Path(parsed_args.watch or "inbox").expanduser().resolve(),
+            "output_folder": output_folder,
+            "report_format": parsed_args.report_format,
+        }
     if parsed_args.watch:
         watch_folder = Path(parsed_args.watch).expanduser().resolve()
-        if not watch_folder.exists() or not watch_folder.is_dir():
-            parser.error(f"Watch folder is not a valid directory: {watch_folder}")
         return {
             "mode": "watch",
             "watch_folder": watch_folder,
@@ -1955,9 +2045,15 @@ def run_watch_mode(watch_folder: Path, output_folder: Path, report_format: str) 
     processed_files = {
         path.resolve(): get_file_signature(path.resolve()) for path in list_eml_files(watch_folder)
     }
-    print(f"Watching folder: {watch_folder}")
-    print(f"Reports will be saved to: {output_folder}")
-    print("Drop .eml files into the folder. Press Ctrl+C to stop.")
+    print("Watcher:             Running")
+    print()
+    print("Drop .eml files into:")
+    print(watch_folder)
+    print()
+    print("Reports will be saved to:")
+    print(output_folder)
+    print()
+    print("Press Ctrl+C to stop.")
 
     try:
         while True:
@@ -1985,7 +2081,16 @@ def run_watch_mode(watch_folder: Path, output_folder: Path, report_format: str) 
 def main() -> None:
     """Entry point for manual file/folder triage or watch mode."""
     cli_options = parse_cli_args()
+    if cli_options["mode"] == "check":
+        print_watch_readiness(
+            cli_options["watch_folder"], cli_options["output_folder"], start_watcher=False
+        )
+        return
     if cli_options["mode"] == "watch":
+        if not print_watch_readiness(
+            cli_options["watch_folder"], cli_options["output_folder"]
+        ):
+            return
         run_watch_mode(
             cli_options["watch_folder"],
             cli_options["output_folder"],
