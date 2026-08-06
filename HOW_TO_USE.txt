@@ -9,6 +9,13 @@ Phish Pharm - Quick Start
 
 3. Double-click Start_Phish_Pharm.bat.
 
+   On first run, it checks required packages and asks before installing any missing package.
+   Package installation uses `python -m pip install -r requirements.txt` and may require
+   internet or package-index access.
+
+   It can optionally ask for AbuseIPDB and VirusTotal API keys. Key entry is hidden and keys
+   are saved only as Windows user environment variables, never inside the project folder.
+
 4. The tool will create and use two Desktop folders:
    - Inbox
    - Reports

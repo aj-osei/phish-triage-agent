@@ -96,6 +96,8 @@ def print_watch_readiness(
     print("=" * 40)
     print()
     print(f"Python:              Ready - {get_python_version()}")
+    if os.environ.get("PHISH_PHARM_REQUIREMENTS_READY") == "1":
+        print("Requirements:        Ready")
     print(f"Inbox folder:        {inbox_status}")
     print(f"Reports folder:      {reports_status}")
     print(

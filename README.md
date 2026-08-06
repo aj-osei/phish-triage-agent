@@ -32,6 +32,19 @@ For normal Windows use:
 
 For a shorter user guide, see `HOW_TO_USE.txt`.
 
+On first run, the launcher checks local Python packages and offers to install missing
+requirements only after you confirm. It uses this command with the same Python interpreter:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Installation may require internet and package-index access. The launcher can also optionally
+collect AbuseIPDB and VirusTotal keys through hidden input and save them as Windows user-level
+environment variables. Keys are never saved in the project folder or displayed. This setup is
+optional: without the keys, local parsing still works, while sender-IP or URL/attachment
+reputation checks are skipped as applicable. RDAP needs no key.
+
 ## Command Line Usage
 
 Run one email:
@@ -59,6 +72,10 @@ readiness without starting the watcher or making external requests. The Windows 
 shows the same check automatically. Missing AbuseIPDB or VirusTotal keys do not stop local
 parsing; the related reputation checks are skipped. RDAP needs no API key, and key values are
 never displayed.
+
+`--check` is always noninteractive: it does not install packages, request API keys, or modify
+environment variables. You may still configure keys manually with the commands below; never
+paste them into source files or GitHub.
 
 ## Reputation API Configuration
 
