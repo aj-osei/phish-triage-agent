@@ -111,6 +111,49 @@ class URLExtractionTests(unittest.TestCase):
                     f"{main.normalize_email_address(return_path) or 'not found'}",
                 )
 
+    def test_sender_ip_uses_exchange_original_client_fallback_after_link_local_ip(self) -> None:
+        message = EmailMessage()
+        message["Authentication-Results"] = "mx.example; sender ip is fe80::54d:972f:e575:741c"
+        message["x-ms-exchange-organization-originalclientipaddress"] = "[8.8.8.8]"
+
+        result = main.find_sender_ip_analysis(message, [])
+
+        self.assertEqual(result["sender_ip"], "8.8.8.8")
+        self.assertEqual(
+            result["sender_ip_source"],
+            "X-MS-Exchange-Organization-OriginalClientIPAddress",
+        )
+        self.assertEqual(result["sender_ip_classification"], "Public IP")
+
+    def test_sender_ip_accepts_public_ipv6_and_rejects_unusable_candidates(self) -> None:
+        public_ipv6_message = EmailMessage()
+        public_ipv6_message["Authentication-Results"] = (
+            "mx.example; sender ip is 2001:4860:4860::8888"
+        )
+        self.assertEqual(
+            main.find_sender_ip_analysis(public_ipv6_message, [])["sender_ip"],
+            "2001:4860:4860::8888",
+        )
+
+        unusable_message = EmailMessage()
+        unusable_message["Authentication-Results"] = "mx.example; sender ip is not-an-ip"
+        unusable_message["X-Originating-IP"] = "[fe80::1]"
+        result = main.find_sender_ip_analysis(unusable_message, [])
+        self.assertEqual(result["sender_ip"], "Not found")
+        self.assertEqual(result["sender_ip_source"], "Not found")
+
+    def test_sender_ip_received_fallback_skips_local_hops_for_public_route(self) -> None:
+        message = EmailMessage()
+        routes = [
+            {"source_ip": "8.8.4.4"},
+            {"source_ip": "fe80::1"},
+        ]
+
+        result = main.find_sender_ip_analysis(message, routes)
+
+        self.assertEqual(result["sender_ip"], "8.8.4.4")
+        self.assertEqual(result["sender_ip_source"], "Received headers fallback")
+
     def test_html_report_uses_local_collapsible_ui_elements(self) -> None:
         message = EmailMessage()
         message["From"] = "sender@example.com"

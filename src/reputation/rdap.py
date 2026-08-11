@@ -67,7 +67,15 @@ class RDAPClient:
             return self._failure(registered_domain, observed_hostnames, source_labels, "Lookup failed - network unavailable")
         except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
             return self._failure(registered_domain, observed_hostnames, source_labels, "Lookup failed - malformed RDAP response")
-        return self._normalize(registered_domain, observed_hostnames, source_labels, payload)
+        try:
+            return self._normalize(registered_domain, observed_hostnames, source_labels, payload)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return self._failure(
+                registered_domain,
+                observed_hostnames,
+                source_labels,
+                "Lookup failed - malformed RDAP response",
+            )
 
     def _lookup_base_url(self, domain: str) -> str:
         global _BOOTSTRAP_CACHE
@@ -76,7 +84,12 @@ class RDAPClient:
                 request = Request(IANA_DNS_BOOTSTRAP_URL, headers={"Accept": "application/json", "User-Agent": "Phish-Pharm/1.0"})
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     payload = json.loads(response.read().decode("utf-8"))
-                _BOOTSTRAP_CACHE = payload if isinstance(payload, dict) else {}
+                services = payload.get("services") if isinstance(payload, dict) else None
+                if not isinstance(services, list):
+                    return ""
+                # Cache only a structurally valid response. A transient bad response must not
+                # poison subsequent domain lookups in the same report run.
+                _BOOTSTRAP_CACHE = payload
             tld = domain.rsplit(".", 1)[-1]
             for service in _BOOTSTRAP_CACHE.get("services", []):
                 if not isinstance(service, list) or len(service) != 2 or tld not in service[0] or not service[1]:
@@ -102,6 +115,8 @@ class RDAPClient:
                     key = event["eventAction"].lower()
                     if key in dates and isinstance(event.get("eventDate"), str): dates[key] = event["eventDate"]
         registered_at = self._parse_date(dates["registration"])
+        if registered_at and registered_at.tzinfo is None:
+            registered_at = registered_at.replace(tzinfo=timezone.utc)
         age_days = (datetime.now(timezone.utc) - registered_at).days if registered_at else None
         nameservers = [str(item.get("ldhName") or item.get("unicodeName")) for item in payload.get("nameservers", []) if isinstance(item, dict) and (item.get("ldhName") or item.get("unicodeName"))]
         statuses = [str(value) for value in payload.get("status", []) if isinstance(value, str)]

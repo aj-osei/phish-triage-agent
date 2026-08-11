@@ -9,6 +9,7 @@ from .abuseipdb import AbuseIPDBClient
 from .models import (
     AttachmentReputationItem,
     AttachmentReputationSummary,
+    DomainRegistrationResult,
     DomainRegistrationSummary,
     ReputationResult,
     URLReputationItem,
@@ -193,7 +194,23 @@ class ReputationService:
             domain = str(target["registered_domain"])
             result = self._domain_cache.get(domain)
             if result is None:
-                result = self.rdap_client.lookup_domain(domain, list(target["observed_hostnames"]), list(target["source_labels"]))
+                try:
+                    result = self.rdap_client.lookup_domain(
+                        domain,
+                        list(target["observed_hostnames"]),
+                        list(target["source_labels"]),
+                    )
+                except Exception:
+                    # One malformed or transient provider result must not prevent later
+                    # From/Reply-To domains in this same message from being attempted.
+                    result = DomainRegistrationResult(
+                        domain,
+                        list(target["observed_hostnames"]),
+                        list(target["source_labels"]),
+                        "RDAP",
+                        "Lookup failed - RDAP provider unavailable",
+                        failed=True,
+                    )
                 self._domain_cache[domain] = result
             results.append(result)
         checked, found, failed = len(results), sum(not item.failed and not item.no_record for item in results), sum(item.failed for item in results)

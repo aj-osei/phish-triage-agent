@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import main
+from reputation.models import DomainRegistrationResult
 from reputation.rdap import RDAPClient, _BOOTSTRAP_CACHE, normalize_registered_domain
 from reputation.service import ReputationService, prepare_domain_registration_targets
 
@@ -73,6 +74,61 @@ class RDAPTests(unittest.TestCase):
             [{"registered_domain": "example.com", "observed_hostnames": ["example.com"], "source_labels": ["From"]}],
         )
 
+    def test_from_and_reply_to_domains_are_deduplicated_without_losing_reply_to(self) -> None:
+        different = prepare_domain_registration_targets(
+            {"sender": "from@example.com", "reply_to": "reply@example.net"}
+        )
+        self.assertEqual(
+            [item["registered_domain"] for item in different], ["example.com", "example.net"]
+        )
+
+        identical = prepare_domain_registration_targets(
+            {"sender": "from@login.example.com", "reply_to": "reply@example.com"}
+        )
+        self.assertEqual(len(identical), 1)
+        self.assertEqual(identical[0]["source_labels"], ["From", "Reply-To"])
+
+    def test_first_domain_failure_does_not_prevent_reply_to_lookup(self) -> None:
+        client = MagicMock()
+        client.lookup_domain.side_effect = [
+            RuntimeError("transient provider error"),
+            DomainRegistrationResult(
+                "example.net", ["example.net"], ["Reply-To"], "RDAP", "Lookup successful"
+            ),
+        ]
+        service = ReputationService(rdap_client=client)
+
+        result = service.check_domains(
+            {"sender": "from@example.com", "reply_to": "reply@example.net"}
+        )
+
+        self.assertEqual(client.lookup_domain.call_count, 2)
+        self.assertTrue(result.results[0].failed)
+        self.assertEqual(result.results[1].registered_domain, "example.net")
+        self.assertFalse(result.results[1].failed)
+
+    def test_invalid_bootstrap_payload_does_not_poison_later_lookup(self) -> None:
+        bootstrap = {"services": [[ ["com"], ["https://rdap.example/"] ]]}
+        payload = {"events": []}
+        invalid_response = MagicMock()
+        invalid_response.read.return_value = b"{}"
+        bootstrap_response = MagicMock()
+        bootstrap_response.read.return_value = json.dumps(bootstrap).encode("utf-8")
+        domain_response = MagicMock()
+        domain_response.read.return_value = json.dumps(payload).encode("utf-8")
+        with patch("reputation.rdap.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.side_effect = [
+                invalid_response,
+                bootstrap_response,
+                domain_response,
+            ]
+            client = RDAPClient()
+            first = client.lookup_domain("example.com", ["example.com"], ["From"])
+            second = client.lookup_domain("example.com", ["example.com"], ["From"])
+
+        self.assertTrue(first.failed)
+        self.assertEqual(second.status, "Lookup successful")
+
     def test_html_domain_section_is_expanded_and_escaped(self) -> None:
         message = EmailMessage(); message.set_content("Body")
         summary = main.build_summary_data(message)
@@ -96,6 +152,19 @@ class RDAPTests(unittest.TestCase):
         self.assertNotIn("<th>Observed hostnames</th>", report)
         self.assertNotIn("<th>Name servers</th>", report)
         self.assertNotIn("x&lt;script&gt;.example.com", report)
+
+    def test_html_domain_country_codes_use_friendly_names(self) -> None:
+        message = EmailMessage(); message.set_content("Body")
+        summary = main.build_summary_data(message)
+        summary["reputation_checks"] = {"sender_ip": {}, "url": {}, "attachment_hash": {}, "domain": {
+            "provider": "RDAP", "status": "Domain Registration: Lookup successful", "total_unique_domains": 1,
+            "total_checked_domains": 1, "total_found_domains": 1, "complete": True,
+            "results": [{"registered_domain": "example.za", "source_labels": ["From"], "status": "Lookup successful", "registration_date": "Registration date unavailable", "country": "ZA"}],
+        }}
+        report = main.build_html_report(summary)
+        self.assertIn(
+            '<th>Country</th><td><div class="domain-value">South Africa</div>', report
+        )
 
 
 if __name__ == "__main__":

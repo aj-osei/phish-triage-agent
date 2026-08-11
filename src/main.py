@@ -498,31 +498,41 @@ def extract_explicit_sender_ip(message, header_name: str) -> str:
 
 
 def find_best_received_header_ip(received_routes: List[Dict[str, object]]) -> str:
-    """Return the best IP observed in Received headers, public or otherwise."""
+    """Return the earliest usable public IP observed in Received headers."""
     for route in reversed(received_routes):
         source_ip = route.get("source_ip", "Not found")
-        if source_ip != "Not found":
+        if source_ip != "Not found" and is_usable_public_ip(str(source_ip)):
             return source_ip
     return "Not found"
 
 
 def find_sender_ip_analysis(message, received_routes: List[Dict[str, object]]) -> Dict[str, str]:
     """Resolve a sender IP using multiple header families in priority order."""
+    def usable(candidate: str) -> str:
+        """Keep only external candidates suitable for sender-IP reputation context."""
+        return candidate if candidate != "Not found" and is_usable_public_ip(candidate) else "Not found"
+
     auth_headers = get_all_headers_or_not_found(message, "Authentication-Results")
     arc_auth_headers = get_all_headers_or_not_found(message, "ARC-Authentication-Results")
 
-    sender_ip = extract_header_sender_ip(auth_headers)
+    sender_ip = usable(extract_header_sender_ip(auth_headers))
     sender_source = "Authentication-Results"
     if sender_ip == "Not found":
-        sender_ip = extract_header_sender_ip(arc_auth_headers)
+        sender_ip = usable(extract_header_sender_ip(arc_auth_headers))
         sender_source = "ARC-Authentication-Results"
 
     if sender_ip == "Not found":
-        sender_ip = extract_received_spf_ip(get_header_or_not_found(message, "Received-SPF"))
+        sender_ip = usable(
+            extract_received_spf_ip(get_header_or_not_found(message, "Received-SPF"))
+        )
         sender_source = "Received-SPF"
 
     if sender_ip == "Not found":
-        sender_ip = extract_forefront_antispam_ip(get_header_or_not_found(message, "X-Forefront-Antispam-Report"))
+        sender_ip = usable(
+            extract_forefront_antispam_ip(
+                get_header_or_not_found(message, "X-Forefront-Antispam-Report")
+            )
+        )
         sender_source = "X-Forefront-Antispam-Report"
 
     if sender_ip == "Not found":
@@ -531,15 +541,16 @@ def find_sender_ip_analysis(message, received_routes: List[Dict[str, object]]) -
             "X-Sender-IP",
             "X-Client-IP",
             "X-MS-Exchange-Organization-ConnectingIP",
+            "X-MS-Exchange-Organization-OriginalClientIPAddress",
         ]
         for header_name in explicit_headers:
-            sender_ip = extract_explicit_sender_ip(message, header_name)
+            sender_ip = usable(extract_explicit_sender_ip(message, header_name))
             if sender_ip != "Not found":
                 sender_source = header_name
                 break
 
     if sender_ip == "Not found":
-        sender_ip = find_best_received_header_ip(received_routes)
+        sender_ip = usable(find_best_received_header_ip(received_routes))
         sender_source = "Received headers fallback"
 
     sender_classification = classify_ip_address(sender_ip) if sender_ip != "Not found" else "Not found"
@@ -1238,6 +1249,37 @@ def html_escape_text(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+COUNTRY_NAME_MAP = {
+    "AU": "Australia",
+    "BR": "Brazil",
+    "CA": "Canada",
+    "CN": "China",
+    "DE": "Germany",
+    "ES": "Spain",
+    "FR": "France",
+    "GB": "United Kingdom",
+    "IN": "India",
+    "IT": "Italy",
+    "JP": "Japan",
+    "KR": "South Korea",
+    "MX": "Mexico",
+    "NL": "Netherlands",
+    "NZ": "New Zealand",
+    "RU": "Russia",
+    "SG": "Singapore",
+    "US": "United States",
+    "ZA": "South Africa",
+}
+
+
+def format_country_name(value: object) -> str:
+    """Return a friendly country name for a known RDAP ISO code, else preserve it."""
+    text = str(value or "").strip()
+    if not text or text == "Not found":
+        return "Not found"
+    return COUNTRY_NAME_MAP.get(text.upper(), text)
+
+
 def build_html_report(summary: Dict[str, object]) -> str:
     """Build HTML content for a local triage report."""
     url_entries = summary["url_entries"]
@@ -1262,10 +1304,21 @@ def build_html_report(summary: Dict[str, object]) -> str:
     def render_kv_rows(items: List[tuple[str, object]]) -> str:
         rows = []
         for label, value in items:
+            value_text = str(value).strip().lower()
+            finding_class = ""
+            if label in {"SPF", "DKIM", "DMARC"}:
+                if value_text == "pass":
+                    finding_class = ' class="finding-positive"'
+                elif value_text == "fail":
+                    finding_class = ' class="finding-attention"'
+                elif value_text in {"not found", "missing", "unknown"}:
+                    finding_class = ' class="finding-neutral"'
             rows.append(
                 "<tr><th>"
                 + html_escape_text(label)
-                + "</th><td>"
+                + "</th><td"
+                + finding_class
+                + ">"
                 + html_escape_text(value)
                 + "</td></tr>"
             )
@@ -1293,11 +1346,15 @@ def build_html_report(summary: Dict[str, object]) -> str:
 
     def quick_check_badge_class(label: object, status: object) -> str:
         """Return a display-only style for compact Quick Check status badges."""
+        if label == "Authentication" and status == "Passed":
+            return "badge-positive"
         if (
             (label == "Authentication" and status == "Failed")
             or (label == "Reply-To mismatch" and status == "Yes")
             or (label == "Return-Path" and status == "Differs from From")
         ):
+            return "badge-attention"
+        if label == "Authentication" and status == "Partial":
             return "badge-notice"
         return "badge-neutral"
 
@@ -1625,6 +1682,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
             if useful(item.get("domain_age")): rows.append(("Domain age", item["domain_age"]))
             if useful(item.get("expiration_date")): rows.append(("Expires on", format_reputation_date(item["expiration_date"])))
             if item.get("domain_status"): rows.append(("Status", [display_status(value) for value in item["domain_status"]]))
+            if useful(item.get("country")): rows.append(("Country", format_country_name(item["country"])))
             recent = ' <span class="recent-domain">Recently registered</span>' if item.get("recently_registered") else ""
             cards.append('<article class="card reputation-result domain-information"><h3>Domain Information: ' + html_escape_text(registered_domain) + recent + "</h3><table>" + render_domain_rows(rows) + "</table></article>")
         return "\n".join([
@@ -1769,15 +1827,15 @@ def build_html_report(summary: Dict[str, object]) -> str:
         """
         :root { color-scheme: light; }
         * { box-sizing: border-box; }
-        body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; margin: 0; padding: 28px; background: #f4f7fb; color: #1f2937; line-height: 1.45; }
+        body { font-family: "Segoe UI", Arial, Helvetica, sans-serif; margin: 0; padding: 32px; background: #f4f7fb; color: #1f2937; line-height: 1.5; }
         .report { max-width: 1120px; margin: 0 auto; }
         .report-header { padding: 28px 32px; background: #173b5d; color: #fff; border-radius: 16px; box-shadow: 0 10px 24px rgba(23, 59, 93, 0.16); }
         .report-header h1 { margin: 0; font-size: 30px; line-height: 1.2; }
         .report-context { margin: 8px 0 0; color: #e5edf5; font-size: 14px; overflow-wrap: anywhere; }
-        main { padding: 24px 0 8px; }
-        .section-card { margin-bottom: 18px; padding: 22px 24px; background: #fff; border: 1px solid #dce5ef; border-radius: 14px; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04); }
-        .section-card h2 { margin: 0 0 16px; color: #173b5d; font-size: 20px; line-height: 1.25; }
-        .section-card h3 { margin: 22px 0 10px; color: #334e68; font-size: 15px; }
+        main { padding: 28px 0 10px; }
+        .section-card { margin-bottom: 22px; padding: 24px 26px; background: #fff; border: 1px solid #d5e0eb; border-top: 4px solid #d7e7f5; border-radius: 14px; box-shadow: 0 5px 16px rgba(15, 23, 42, 0.05); }
+        .section-card h2 { margin: 0 0 18px; color: #173b5d; font-size: 21px; line-height: 1.25; letter-spacing: -0.01em; }
+        .section-card h3 { margin: 24px 0 12px; color: #334e68; font-size: 15px; }
         .muted { color: #627d98; }
         .section-count { margin: -8px 0 14px; color: #627d98; font-size: 14px; }
         .quick-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -1787,16 +1845,22 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; line-height: 1.2; }
         .badge-neutral { color: #274c77; background: #eaf1f8; }
         .badge-notice { color: #7a4b00; background: #fff3d6; }
+        .badge-positive { color: #17633a; background: #e7f6ec; }
+        .badge-attention { color: #9b1c1c; background: #fdebec; }
         .check-detail { color: #627d98; font-size: 0.9em; overflow-wrap: anywhere; }
         .reputation-status { margin: 0 0 12px; color: #334e68; overflow-wrap: anywhere; word-break: break-word; }
         .content { white-space: pre-wrap; background: #f8fafc; border: 1px solid #dce5ef; border-radius: 10px; padding: 16px; margin: 0; overflow-wrap: anywhere; }
         .body-details { margin-top: 12px; }
         .body-details .content { margin: 0 14px 14px; }
         .summary-table, table { width: 100%; border-collapse: collapse; }
-        .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e5edf5; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
+        .summary-table th, .summary-table td, .card th, .card td { text-align: left; padding: 11px 13px; border-bottom: 1px solid #e5edf5; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
         .summary-table tr:last-child th, .summary-table tr:last-child td, .card tr:last-child th, .card tr:last-child td { border-bottom: 0; }
         .summary-table th, .card th { width: 235px; color: #334e68; background: #f8fafc; font-weight: 700; }
-        .card { border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; margin-top: 12px; background: #fff; }
+        .summary-table td, .card td { color: #26384a; }
+        .finding-positive { color: #17633a !important; background: #f0faf3; font-weight: 700; }
+        .finding-attention { color: #9b1c1c !important; background: #fff3f3; font-weight: 700; }
+        .finding-neutral { color: #627d98 !important; }
+        .card { border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; margin-top: 14px; background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03); }
         .card h3 { margin: 0; padding: 11px 14px; background: #f1f6fb; color: #334e68; font-size: 15px; }
         .domain-information { margin-top: 14px; }
         .domain-value + .domain-value { margin-top: 4px; }
@@ -1815,7 +1879,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
           body { padding: 14px; }
           .report-header { padding: 22px 20px; }
           .report-header h1 { font-size: 25px; }
-          .section-card { padding: 18px 16px; }
+          .section-card { padding: 20px 17px; }
           .summary-table th, .card th { width: 40%; }
           .quick-checks { grid-template-columns: 1fr; }
         }
