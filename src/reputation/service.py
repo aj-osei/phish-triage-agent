@@ -23,6 +23,21 @@ from .virustotal import (
 )
 
 
+EMAIL_ADDRESS_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])"
+)
+
+
+def extract_mailbox_address(value: object) -> str:
+    """Return a mailbox from standard or safe Exchange-style display text."""
+    text = str(value or "").strip()
+    _, address = parseaddr(text)
+    if address:
+        return address.strip().lower()
+    match = EMAIL_ADDRESS_PATTERN.search(text)
+    return match.group(1).lower() if match else ""
+
+
 def build_unchecked_reputation_checks(sender_ip: str = "Not found") -> Dict[str, Dict[str, object]]:
     """Return report-safe placeholders when live lookups have not run."""
     sender_details = {"IP address": sender_ip} if sender_ip != "Not found" else {}
@@ -141,7 +156,7 @@ def prepare_domain_registration_targets(summary: Dict[str, object]) -> List[Dict
     observed: Dict[str, Dict[str, object]] = {}
     candidates: List[tuple[str, str]] = []
     for label, key in (("From", "sender"), ("Reply-To", "reply_to")):
-        address = parseaddr(str(summary.get(key, "")))[1]
+        address = extract_mailbox_address(summary.get(key, ""))
         if "@" in address:
             candidates.append((label, address.rsplit("@", 1)[1]))
     for label, hostname in candidates:

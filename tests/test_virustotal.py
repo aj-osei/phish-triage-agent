@@ -383,8 +383,16 @@ class VirusTotalURLTests(unittest.TestCase):
         self.assertIn(
             '<details class="collapsible reputation-details">\n<summary>URL Reputation</summary>', report
         )
-        self.assertIn(
-            '<details class="collapsible reputation-details">\n<summary>Sender IP Reputation</summary>', report
+        self.assertIn("<h3>Sender IP Reputation</h3>", report)
+        self.assertIn("<h4>AbuseIPDB</h4>", report)
+        self.assertNotIn("View reputation details", report)
+        self.assertLess(
+            report.index("<h2>Sender IP Analysis</h2>"),
+            report.index("<h3>Sender IP Reputation</h3>"),
+        )
+        self.assertLess(
+            report.index("<h3>Sender IP Reputation</h3>"),
+            report.index("<h2>Reputation Checks</h2>"),
         )
         self.assertIn(
             '<details class="collapsible reputation-details">\n<summary>Domain Registration</summary>', report

@@ -26,11 +26,18 @@ class AbuseIPDBTests(unittest.TestCase):
                     "ipAddress": "8.8.8.8",
                     "abuseConfidenceScore": 25,
                     "totalReports": 4,
+                    "countryName": "United States",
                     "countryCode": "US",
+                    "city": "New York",
                     "isp": "Example ISP",
                     "domain": "example.net",
                     "usageType": "Data Center/Web Hosting/Transit",
                     "lastReportedAt": "2026-07-22T12:00:00+00:00",
+                    "reports": [
+                        {"categories": [7, 11]},
+                        {"categories": [11, 17]},
+                        {"categories": [7]},
+                    ],
                 }
             }
         ).encode("utf-8")
@@ -41,8 +48,65 @@ class AbuseIPDBTests(unittest.TestCase):
         self.assertEqual(result.status, "Lookup successful")
         self.assertEqual(result.provider, "AbuseIPDB")
         self.assertEqual(result.details["Abuse confidence score"], "25")
+        self.assertEqual(result.details["Total reports"], "4")
+        self.assertEqual(result.details["Last reported date"], "2026-07-22T12:00:00+00:00")
         self.assertEqual(result.details["ISP"], "Example ISP")
+        self.assertEqual(result.details["Usage type"], "Data Center/Web Hosting/Transit")
+        self.assertEqual(result.details["Country name"], "United States")
+        self.assertEqual(result.details["City"], "New York")
+        self.assertEqual(
+            result.details["Reported activity"], "Phishing, Email Spam, Spoofing"
+        )
         self.assertEqual(mock_urlopen.call_count, 1)
+        request_url = mock_urlopen.call_args.args[0].full_url
+        self.assertIn("verbose=true", request_url)
+        self.assertIn("maxAgeInDays=90", request_url)
+
+    def test_city_is_neutral_when_provider_does_not_return_it(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "data": {
+                    "ipAddress": "8.8.8.8",
+                    "countryCode": "ZZ",
+                    "totalReports": 0,
+                    "reports": [],
+                }
+            }
+        ).encode("utf-8")
+        with patch("reputation.abuseipdb.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = response
+            result = AbuseIPDBClient(api_key="test-key").lookup_sender_ip("8.8.8.8")
+
+        self.assertEqual(result.details["City"], "Not found")
+        self.assertEqual(result.details["Total reports"], "0")
+        self.assertEqual(result.details["Reported activity"], "Not found")
+        self.assertEqual(main.format_country_name("ZZ"), "ZZ")
+
+    def test_report_activity_handles_unknown_and_malformed_categories(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "data": {
+                    "ipAddress": "8.8.8.8",
+                    "totalReports": 99,
+                    "reports": [
+                        {"categories": [24, 7, 24]},
+                        {"categories": "not a list"},
+                        {"categories": ["11", None]},
+                        {},
+                    ],
+                }
+            }
+        ).encode("utf-8")
+        with patch("reputation.abuseipdb.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = response
+            result = AbuseIPDBClient(api_key="test-key").lookup_sender_ip("8.8.8.8")
+
+        self.assertEqual(result.details["Total reports"], "99")
+        self.assertEqual(
+            result.details["Reported activity"], "Phishing, Unknown category (24)"
+        )
 
     def test_missing_api_key_skips_lookup(self) -> None:
         with patch.dict(os.environ, {}, clear=True), patch("reputation.abuseipdb.urlopen") as mock_urlopen:

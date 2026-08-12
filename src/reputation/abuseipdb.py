@@ -14,6 +14,29 @@ from .models import ReputationResult
 
 ABUSEIPDB_CHECK_URL = "https://api.abuseipdb.com/api/v2/check"
 ABUSEIPDB_TIMEOUT_SECONDS = 5
+ABUSEIPDB_CATEGORY_NAMES = {
+    3: "Fraud Orders",
+    4: "DDoS Attack",
+    5: "FTP Brute-Force",
+    6: "Ping of Death",
+    7: "Phishing",
+    8: "Fraud VoIP",
+    9: "Open Proxy",
+    10: "Web Spam",
+    11: "Email Spam",
+    12: "Blog Spam",
+    13: "VPN IP",
+    14: "Port Scan",
+    15: "Hacking",
+    16: "SQL Injection",
+    17: "Spoofing",
+    18: "Brute-Force",
+    19: "Bad Web Bot",
+    20: "Exploited Host",
+    21: "Web App Attack",
+    22: "SSH",
+    23: "IoT Targeted",
+}
 
 
 class AbuseIPDBClient:
@@ -89,11 +112,14 @@ class AbuseIPDBClient:
             "IP address": self._value(data.get("ipAddress"), sender_ip),
             "Abuse confidence score": self._value(data.get("abuseConfidenceScore")),
             "Total reports": self._value(data.get("totalReports")),
+            "Country name": self._value(data.get("countryName")),
             "Country code": self._value(data.get("countryCode")),
+            "City": self._value(data.get("city")),
             "ISP": self._value(data.get("isp")),
             "Domain": self._value(data.get("domain")),
             "Usage type": self._value(data.get("usageType")),
             "Last reported date": self._value(data.get("lastReportedAt")),
+            "Reported activity": self._reported_activity(data.get("reports")),
         }
         return ReputationResult(
             category="Sender IP Reputation",
@@ -108,3 +134,24 @@ class AbuseIPDBClient:
         if value is None or value == "":
             return default
         return str(value)
+
+    @staticmethod
+    def _reported_activity(reports: object) -> str:
+        """Flatten verbose report categories without treating report count as activity."""
+        if not isinstance(reports, list):
+            return "Not found"
+
+        category_ids: set[int] = set()
+        for report in reports:
+            if not isinstance(report, dict) or not isinstance(report.get("categories"), list):
+                continue
+            for category_id in report["categories"]:
+                if isinstance(category_id, int) and not isinstance(category_id, bool):
+                    category_ids.add(category_id)
+
+        if not category_ids:
+            return "Not found"
+        return ", ".join(
+            ABUSEIPDB_CATEGORY_NAMES.get(category_id, f"Unknown category ({category_id})")
+            for category_id in sorted(category_ids)
+        )
