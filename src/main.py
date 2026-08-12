@@ -31,6 +31,9 @@ from version import PROJECT_VERSION
 
 
 URL_PATTERN = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
+EMAIL_ADDRESS_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![A-Za-z0-9._%+-])"
+)
 AUTH_RESULT_PATTERN = re.compile(r"\b(spf|dkim|dmarc)\s*=\s*([a-zA-Z0-9_-]+)", re.IGNORECASE)
 URL_HTML_ATTRIBUTES = {"href", "src", "action", "data", "formaction"}
 WATCH_POLL_SECONDS = 2
@@ -320,8 +323,15 @@ def normalize_email_address(value: object) -> str:
     if not value or str(value).strip().lower() in {"not found", "(not provided)"}:
         return ""
 
-    _, email_address = parseaddr(str(value))
-    return email_address.strip().lower()
+    text = str(value).strip()
+    _, email_address = parseaddr(text)
+    if email_address:
+        return email_address.strip().lower()
+
+    # Some Exchange-style display values use brackets rather than RFC angle
+    # brackets. Preserve a valid mailbox from those values without inventing one.
+    match = EMAIL_ADDRESS_PATTERN.search(text)
+    return match.group(1).lower() if match else ""
 
 
 def get_email_domain(value: object) -> str:
@@ -329,7 +339,8 @@ def get_email_domain(value: object) -> str:
     email_address = normalize_email_address(value)
     if "@" not in email_address:
         return ""
-    return email_address.rsplit("@", 1)[1]
+    domain = email_address.rsplit("@", 1)[1].strip().rstrip(".")
+    return domain.lower() if domain else ""
 
 
 def build_quick_checks(summary: Dict[str, object]) -> List[tuple[str, str, str]]:
@@ -1400,13 +1411,95 @@ def build_html_report(summary: Dict[str, object]) -> str:
             for label in ("IP address", "Abuse confidence score", "Total reports"):
                 if label in details:
                     rows.append((label, details[label]))
-            for label in ("Country code", "ISP", "Domain", "Usage type", "Last reported date"):
+            for label in ("Country code", "City", "ISP", "Domain", "Usage type", "Last reported date"):
                 value = details.get(label)
                 if value and value != "Not found":
-                    rows.append((label, format_reputation_date(value) if label == "Last reported date" else value))
+                    display_label = "Country" if label == "Country code" else label
+                    display_value = format_reputation_date(value) if label == "Last reported date" else value
+                    if label == "Country code":
+                        display_value = format_country_name(value)
+                    rows.append((display_label, display_value))
         else:
             rows.extend((str(label), value) for label, value in details.items())
         return '<article class="card reputation-result"><table>' + render_kv_rows(rows) + "</table></article>"
+
+    def render_sender_ip_reputation(result: object) -> str:
+        """Render one always-visible AbuseIPDB summary beside sender-IP analysis."""
+        if not isinstance(result, dict):
+            result = {}
+        details = result.get("details", {})
+        if not isinstance(details, dict):
+            details = {}
+        unavailable = "Not available"
+
+        def display_value(label: str) -> str:
+            value = details.get(label)
+            if value in {None, "", "Not found"}:
+                return unavailable
+            if label == "Last reported date":
+                formatted = format_reputation_date(value)
+                return unavailable if formatted == "Unavailable" else formatted
+            if label == "Country code":
+                return format_country_name(value)
+            return str(value)
+
+        def display_country() -> str:
+            """Prefer AbuseIPDB's supplied country name before mapping its code."""
+            country_name = details.get("Country name")
+            if country_name not in {None, "", "Not found"}:
+                return str(country_name)
+            return display_value("Country code")
+
+        def abuse_confidence_class(value: object) -> str:
+            try:
+                score = int(str(value))
+            except (TypeError, ValueError):
+                return "finding-neutral"
+            if score == 0:
+                return "finding-positive"
+            if 1 <= score <= 74:
+                return "finding-caution"
+            if 75 <= score <= 100:
+                return "finding-attention"
+            return "finding-neutral"
+
+        def render_sender_rows(items: List[tuple[str, str, str]]) -> str:
+            return "\n".join(
+                "<tr><th>"
+                + html_escape_text(label)
+                + "</th><td"
+                + (f' class="{css_class}"' if css_class else "")
+                + ">"
+                + html_escape_text(value)
+                + "</td></tr>"
+                for label, value, css_class in items
+            )
+
+        summary_rows = [("Lookup Status", str(result.get("status", "Not checked")), "")]
+        if str(result.get("status", "")).lower() == "lookup successful":
+            confidence = display_value("Abuse confidence score")
+            summary_rows.extend(
+                [
+                    ("Abuse Confidence", confidence, abuse_confidence_class(confidence)),
+                    ("Reports", display_value("Total reports"), ""),
+                    ("Last Reported", display_value("Last reported date"), ""),
+                    ("Reported Activity", display_value("Reported activity"), ""),
+                    ("ISP", display_value("ISP"), ""),
+                    ("Usage Type", display_value("Usage type"), ""),
+                    ("Country", display_country(), ""),
+                ]
+            )
+        return "\n".join(
+            [
+                '<div class="sender-ip-reputation">',
+                "<h3>Sender IP Reputation</h3>",
+                "<h4>AbuseIPDB</h4>",
+                '<article class="card reputation-result"><table>'
+                + render_sender_rows(summary_rows)
+                + "</table></article>",
+                "</div>",
+            ]
+        )
 
     def render_url_reputation(result: object) -> str:
         """Render compact VirusTotal coverage and only vendor-flagged URL details."""
@@ -1662,9 +1755,6 @@ def build_html_report(summary: Dict[str, object]) -> str:
         def useful(value: object) -> bool:
             return bool(value) and str(value) not in {"Not found", "Not calculated", ""}
 
-        def display_status(value: object) -> str:
-            return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(value)).lower()
-
         cards = []
         for item in result.get("results", []):
             if not isinstance(item, dict): continue
@@ -1681,7 +1771,6 @@ def build_html_report(summary: Dict[str, object]) -> str:
             rows.append(("Registered on", format_reputation_date(item.get("registration_date"))))
             if useful(item.get("domain_age")): rows.append(("Domain age", item["domain_age"]))
             if useful(item.get("expiration_date")): rows.append(("Expires on", format_reputation_date(item["expiration_date"])))
-            if item.get("domain_status"): rows.append(("Status", [display_status(value) for value in item["domain_status"]]))
             if useful(item.get("country")): rows.append(("Country", format_country_name(item["country"])))
             recent = ' <span class="recent-domain">Recently registered</span>' if item.get("recently_registered") else ""
             cards.append('<article class="card reputation-result domain-information"><h3>Domain Information: ' + html_escape_text(registered_domain) + recent + "</h3><table>" + render_domain_rows(rows) + "</table></article>")
@@ -1694,21 +1783,13 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]) + "</table></article>", "\n".join(cards), "</div></details>"])
 
     def render_reputation_checks() -> str:
-        sender_result = (
-            reputation_checks.get("sender_ip", {})
-            if isinstance(reputation_checks, dict)
-            else {}
-        )
-        content = [
-            '<details class="collapsible reputation-details">',
-            "<summary>Sender IP Reputation</summary>",
-            '<div class="collapsible-content">',
-            render_reputation_result(sender_result),
-            "</div></details>",
-        ]
-        content.extend(
+        return "\n".join(
             [
-                render_domain_registration(reputation_checks.get("domain", {}) if isinstance(reputation_checks, dict) else {}),
+                render_domain_registration(
+                    reputation_checks.get("domain", {})
+                    if isinstance(reputation_checks, dict)
+                    else {}
+                ),
                 render_url_reputation(
                     reputation_checks.get("url", {}) if isinstance(reputation_checks, dict) else {}
                 ),
@@ -1719,7 +1800,6 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 ),
             ]
         )
-        return "\n".join(content)
 
     def render_content_cards(items: List[Dict[str, object]], title_prefix: str) -> str:
         if not items:
@@ -1858,10 +1938,13 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .summary-table th, .card th { width: 235px; color: #334e68; background: #f8fafc; font-weight: 700; }
         .summary-table td, .card td { color: #26384a; }
         .finding-positive { color: #17633a !important; background: #f0faf3; font-weight: 700; }
+        .finding-caution { color: #7a4b00 !important; background: #fff8e6; font-weight: 700; }
         .finding-attention { color: #9b1c1c !important; background: #fff3f3; font-weight: 700; }
         .finding-neutral { color: #627d98 !important; }
         .card { border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; margin-top: 14px; background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03); }
         .card h3 { margin: 0; padding: 11px 14px; background: #f1f6fb; color: #334e68; font-size: 15px; }
+        .sender-ip-reputation { margin-top: 22px; padding-top: 2px; border-top: 1px solid #e5edf5; }
+        .sender-ip-reputation h4 { margin: 0 0 8px; color: #627d98; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
         .domain-information { margin-top: 14px; }
         .domain-value + .domain-value { margin-top: 4px; }
         .recent-domain { display: inline-block; margin-left: 8px; padding: 2px 7px; border-radius: 999px; background: #fff3d6; color: #7a4b00; font-size: 12px; font-weight: 600; }
@@ -1906,6 +1989,9 @@ def build_html_report(summary: Dict[str, object]) -> str:
             ]
         ),
         "</table></section>",
+        '<section class="section-card"><h2>Quick Checks</h2>',
+        render_quick_checks(),
+        "</section>",
         '<section class="section-card"><h2>Body Preview</h2><div class="content">'
         + html_escape_text(summary["body_preview"])
         + '</div><details class="collapsible body-details"><summary>View full body</summary><div class="content">'
@@ -1919,9 +2005,10 @@ def build_html_report(summary: Dict[str, object]) -> str:
                 ("IP Classification", summary["sender_ip_classification"]),
             ]
         ),
-        "</table></section>",
-        '<section class="section-card"><h2>Quick Checks</h2>',
-        render_quick_checks(),
+        "</table>",
+        render_sender_ip_reputation(
+            reputation_checks.get("sender_ip", {}) if isinstance(reputation_checks, dict) else {}
+        ),
         "</section>",
         '<section class="section-card"><h2>Reputation Checks</h2>',
         render_reputation_checks(),

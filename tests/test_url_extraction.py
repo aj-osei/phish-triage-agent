@@ -111,6 +111,28 @@ class URLExtractionTests(unittest.TestCase):
                     f"{main.normalize_email_address(return_path) or 'not found'}",
                 )
 
+    def test_email_domain_parsing_handles_standard_and_exchange_style_addresses(self) -> None:
+        cases = {
+            "user@uab.edu": "uab.edu",
+            "Example User <user@uab.edu>": "uab.edu",
+            "Example User [user@uab.edu]": "uab.edu",
+            " Example User <USER@UAB.EDU> ": "uab.edu",
+            "sender@external.example": "external.example",
+            "Not found": "",
+            "not a mailbox": "",
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(main.get_email_domain(value), expected)
+
+        checks = {
+            label: status
+            for label, status, _ in main.build_quick_checks(
+                {"sender": "Example User [user@uab.edu]", "recipient": "recipient@uab.edu"}
+            )
+        }
+        self.assertEqual(checks["External sender"], "No")
+
     def test_sender_ip_uses_exchange_original_client_fallback_after_link_local_ip(self) -> None:
         message = EmailMessage()
         message["Authentication-Results"] = "mx.example; sender ip is fe80::54d:972f:e575:741c"
@@ -178,6 +200,80 @@ class URLExtractionTests(unittest.TestCase):
         self.assertNotIn("Received Header Public Originating IP", report)
         self.assertNotIn("<script", report.lower())
         self.assertNotIn("<a href=", report.lower())
+
+    def test_html_moves_quick_checks_and_sender_ip_reputation_to_requested_locations(self) -> None:
+        message = EmailMessage()
+        message["From"] = "sender@example.com"
+        message["To"] = "recipient@example.edu"
+        message.set_content("Body")
+        summary = main.build_summary_data(message)
+        summary["reputation_checks"] = {
+            "sender_ip": {
+                "category": "Sender IP Reputation",
+                "provider": "AbuseIPDB",
+                "status": "Lookup successful",
+                "details": {
+                    "Abuse confidence score": "25",
+                    "Country name": "United States",
+                    "Country code": "US",
+                    "City": "New York",
+                    "ISP": "Example ISP",
+                },
+            },
+            "domain": {}, "url": {}, "attachment_hash": {},
+        }
+        report = main.build_html_report(summary)
+
+        self.assertLess(report.index("<h2>Email Summary</h2>"), report.index("<h2>Quick Checks</h2>"))
+        self.assertLess(report.index("<h2>Quick Checks</h2>"), report.index("<h2>Body Preview</h2>"))
+        sender_analysis = report.index("<h2>Sender IP Analysis</h2>")
+        sender_reputation = report.index("<h3>Sender IP Reputation</h3>")
+        reputation_checks = report.index("<h2>Reputation Checks</h2>")
+        self.assertLess(sender_analysis, sender_reputation)
+        self.assertLess(sender_reputation, reputation_checks)
+        self.assertEqual(report.count("<h3>Sender IP Reputation</h3>"), 1)
+        self.assertIn("<th>Lookup Status</th>", report)
+        self.assertIn("<th>Abuse Confidence</th>", report)
+        self.assertIn("<th>Reports</th>", report)
+        self.assertIn("<th>Last Reported</th>", report)
+        self.assertIn("<th>Reported Activity</th>", report)
+        self.assertIn("<th>ISP</th>", report)
+        self.assertIn("<th>Usage Type</th>", report)
+        self.assertIn("<th>Country</th><td>United States</td>", report)
+        self.assertNotIn("<th>City</th>", report)
+        self.assertNotIn("New York", report)
+        self.assertIn("<h4>AbuseIPDB</h4>", report)
+        self.assertIn("<th>Reported Activity</th><td>Not available</td>", report)
+        self.assertNotIn("View reputation details", report)
+
+    def test_abuse_confidence_uses_score_only_semantic_classes(self) -> None:
+        message = EmailMessage(); message.set_content("Body")
+        expectations = (
+            ("0", "0", "finding-positive"),
+            ("1", "1", "finding-caution"),
+            ("74", "74", "finding-caution"),
+            ("75", "75", "finding-attention"),
+            ("100", "100", "finding-attention"),
+            ("unavailable", "unavailable", "finding-neutral"),
+            (None, "Not available", "finding-neutral"),
+        )
+        for score, displayed_score, css_class in expectations:
+            with self.subTest(score=score):
+                summary = main.build_summary_data(message)
+                details = {} if score is None else {"Abuse confidence score": score}
+                summary["reputation_checks"] = {
+                    "sender_ip": {
+                        "category": "Sender IP Reputation",
+                        "provider": "AbuseIPDB",
+                        "status": "Lookup successful",
+                        "details": details,
+                    },
+                    "domain": {}, "url": {}, "attachment_hash": {},
+                }
+                report = main.build_html_report(summary)
+                self.assertIn(
+                    f'<th>Abuse Confidence</th><td class="{css_class}">{displayed_score}</td>', report
+                )
 
     def test_html_report_keeps_raw_received_headers_in_advanced_details(self) -> None:
         message = EmailMessage()

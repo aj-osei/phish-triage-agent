@@ -88,6 +88,15 @@ class RDAPTests(unittest.TestCase):
         self.assertEqual(len(identical), 1)
         self.assertEqual(identical[0]["source_labels"], ["From", "Reply-To"])
 
+    def test_exchange_style_from_address_reaches_domain_registration_targets(self) -> None:
+        targets = prepare_domain_registration_targets(
+            {"sender": "Example User [USER@UAB.EDU]", "reply_to": "Not found"}
+        )
+        self.assertEqual(
+            targets,
+            [{"registered_domain": "uab.edu", "observed_hostnames": ["uab.edu"], "source_labels": ["From"]}],
+        )
+
     def test_first_domain_failure_does_not_prevent_reply_to_lookup(self) -> None:
         client = MagicMock()
         client.lookup_domain.side_effect = [
@@ -148,7 +157,8 @@ class RDAPTests(unittest.TestCase):
         self.assertIn("Recently registered", report)
         self.assertGreater(report.index("<th>Domain</th>"), report.index("<summary>Domain Registration</summary>"))
         self.assertLess(report.index("<th>Domain</th>"), report.index("<th>Registrar</th>"))
-        self.assertIn("client delete prohibited", report)
+        self.assertNotIn("<th>Status</th>", report)
+        self.assertNotIn("client delete prohibited", report)
         self.assertNotIn("<th>Observed hostnames</th>", report)
         self.assertNotIn("<th>Name servers</th>", report)
         self.assertNotIn("x&lt;script&gt;.example.com", report)
