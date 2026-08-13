@@ -15,7 +15,10 @@ from .models import DomainRegistrationResult
 
 IANA_DNS_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
 RDAP_TIMEOUT_SECONDS = 5
-_BOOTSTRAP_CACHE: Dict[str, object] | None = None
+# A normalized TLD-to-service mapping. Only a non-empty, structurally valid
+# mapping is cached, so a transient or malformed IANA response cannot poison
+# later lookups in this process.
+_BOOTSTRAP_CACHE: Dict[str, str] | None = None
 _EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 
@@ -50,9 +53,9 @@ class RDAPClient:
     def lookup_domain(
         self, registered_domain: str, observed_hostnames: list[str], source_labels: list[str]
     ) -> DomainRegistrationResult:
-        base_url = self._lookup_base_url(registered_domain)
+        base_url, bootstrap_status = self._lookup_base_url(registered_domain)
         if not base_url:
-            return self._failure(registered_domain, observed_hostnames, source_labels, "Lookup failed - IANA bootstrap unavailable")
+            return self._failure(registered_domain, observed_hostnames, source_labels, bootstrap_status)
         request = Request(base_url.rstrip("/") + "/domain/" + registered_domain, headers={"Accept": "application/rdap+json, application/json", "User-Agent": "Phish-Pharm/1.0"})
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
@@ -77,28 +80,67 @@ class RDAPClient:
                 "Lookup failed - malformed RDAP response",
             )
 
-    def _lookup_base_url(self, domain: str) -> str:
+    def _lookup_base_url(self, domain: str) -> tuple[str, str]:
+        """Select a service URL and retain the stage that prevented selection."""
         global _BOOTSTRAP_CACHE
+        if _BOOTSTRAP_CACHE is None:
+            services = self._load_bootstrap_services()
+            if services is None:
+                return "", "Lookup failed - IANA bootstrap unavailable"
+            _BOOTSTRAP_CACHE = services
+
+        tld = domain.rsplit(".", 1)[-1].lower()
+        base_url = _BOOTSTRAP_CACHE.get(tld)
+        if not base_url:
+            return "", "Lookup failed - RDAP service unavailable"
+        return base_url, ""
+
+    def _load_bootstrap_services(self) -> Dict[str, str] | None:
+        """Fetch and validate the IANA DNS bootstrap without caching failures."""
         try:
-            if _BOOTSTRAP_CACHE is None:
-                request = Request(IANA_DNS_BOOTSTRAP_URL, headers={"Accept": "application/json", "User-Agent": "Phish-Pharm/1.0"})
-                with urlopen(request, timeout=self.timeout_seconds) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                services = payload.get("services") if isinstance(payload, dict) else None
-                if not isinstance(services, list):
-                    return ""
-                # Cache only a structurally valid response. A transient bad response must not
-                # poison subsequent domain lookups in the same report run.
-                _BOOTSTRAP_CACHE = payload
-            tld = domain.rsplit(".", 1)[-1]
-            for service in _BOOTSTRAP_CACHE.get("services", []):
-                if not isinstance(service, list) or len(service) != 2 or tld not in service[0] or not service[1]:
-                    continue
-                base_url = str(service[1][0])
-                return base_url if base_url.startswith("https://") else ""
-        except (HTTPError, URLError, socket.timeout, TimeoutError, UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError, AttributeError):
-            return ""
-        return ""
+            request = Request(
+                IANA_DNS_BOOTSTRAP_URL,
+                headers={"Accept": "application/json", "User-Agent": "Phish-Pharm/1.0"},
+            )
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (
+            HTTPError,
+            URLError,
+            socket.timeout,
+            TimeoutError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            OSError,
+            ValueError,
+        ):
+            return None
+
+        services = payload.get("services") if isinstance(payload, dict) else None
+        if not isinstance(services, list):
+            return None
+
+        normalized: Dict[str, str] = {}
+        for service in services:
+            if not isinstance(service, list) or len(service) != 2:
+                continue
+            tlds, urls = service
+            if not isinstance(tlds, list) or not isinstance(urls, list):
+                continue
+            base_url = next(
+                (
+                    url.rstrip("/")
+                    for url in urls
+                    if isinstance(url, str) and url.startswith("https://")
+                ),
+                "",
+            )
+            if not base_url:
+                continue
+            for tld in tlds:
+                if isinstance(tld, str) and tld.strip():
+                    normalized.setdefault(tld.strip().lower(), base_url)
+        return normalized or None
 
     @staticmethod
     def _failure(domain: str, hostnames: list[str], labels: list[str], status: str) -> DomainRegistrationResult:

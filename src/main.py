@@ -1955,6 +1955,7 @@ def build_html_report(summary: Dict[str, object]) -> str:
         .technical-list li + li { margin-top: 8px; }
         .note { margin: 0 0 12px; padding: 12px 14px; color: #334e68; background: #f8fafc; border-left: 4px solid #7fa6c9; border-radius: 8px; }
         .collapsible { border: 1px solid #dce5ef; border-radius: 10px; background: #fbfdff; }
+        .reputation-details + .reputation-details { margin-top: 16px; }
         .collapsible summary { padding: 12px 14px; color: #274c77; cursor: pointer; font-weight: 700; }
         .collapsible summary:hover { background: #f1f6fb; }
         .collapsible-content { padding: 0 14px 14px; }

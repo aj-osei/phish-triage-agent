@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -97,6 +97,76 @@ class RDAPTests(unittest.TestCase):
             [{"registered_domain": "uab.edu", "observed_hostnames": ["uab.edu"], "source_labels": ["From"]}],
         )
 
+    def test_edu_service_selection_uses_valid_bootstrap_mapping(self) -> None:
+        bootstrap = {"services": [[ ["edu"], ["https://rdap.edu.example/"] ]]}
+        bootstrap_response = MagicMock()
+        bootstrap_response.read.return_value = json.dumps(bootstrap).encode("utf-8")
+        domain_response = MagicMock()
+        domain_response.read.return_value = json.dumps({"events": []}).encode("utf-8")
+        with patch("reputation.rdap.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.side_effect = [
+                bootstrap_response,
+                domain_response,
+            ]
+            result = RDAPClient().lookup_domain("uab.edu", ["uab.edu"], ["From"])
+
+        self.assertEqual(result.status, "Lookup successful")
+        self.assertIn("https://rdap.edu.example/domain/uab.edu", mock_urlopen.call_args_list[1].args[0].full_url)
+
+    def test_failed_bootstrap_fetch_is_not_cached_or_permanent(self) -> None:
+        bootstrap = {"services": [[ ["edu"], ["https://rdap.edu.example/"] ]]}
+        bootstrap_response = MagicMock()
+        bootstrap_response.read.return_value = json.dumps(bootstrap).encode("utf-8")
+        domain_response = MagicMock()
+        domain_response.read.return_value = json.dumps({"events": []}).encode("utf-8")
+        with patch("reputation.rdap.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.side_effect = [
+                URLError("temporary network issue"),
+                bootstrap_response,
+                domain_response,
+            ]
+            client = RDAPClient()
+            first = client.lookup_domain("uab.edu", ["uab.edu"], ["From"])
+            second = client.lookup_domain("uab.edu", ["uab.edu"], ["From"])
+
+        self.assertEqual(first.status, "Lookup failed - IANA bootstrap unavailable")
+        self.assertEqual(second.status, "Lookup successful")
+
+    def test_rdap_server_failure_is_not_labeled_as_bootstrap_failure(self) -> None:
+        bootstrap = {"services": [[ ["edu"], ["https://rdap.edu.example/"] ]]}
+        bootstrap_response = MagicMock()
+        bootstrap_response.read.return_value = json.dumps(bootstrap).encode("utf-8")
+        with patch("reputation.rdap.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value = bootstrap_response
+            mock_urlopen.side_effect = [
+                MagicMock(__enter__=MagicMock(return_value=bootstrap_response)),
+                HTTPError("https://rdap.edu.example", 503, "unavailable", {}, None),
+            ]
+            result = RDAPClient().lookup_domain("uab.edu", ["uab.edu"], ["From"])
+
+        self.assertEqual(result.status, "Lookup failed - RDAP provider unavailable")
+
+    def test_valid_cached_bootstrap_is_reused_for_later_domains(self) -> None:
+        bootstrap = {"services": [[ ["com", "edu"], ["https://rdap.example/"] ]]}
+        bootstrap_response = MagicMock()
+        bootstrap_response.read.return_value = json.dumps(bootstrap).encode("utf-8")
+        first_domain = MagicMock()
+        first_domain.read.return_value = json.dumps({"events": []}).encode("utf-8")
+        second_domain = MagicMock()
+        second_domain.read.return_value = json.dumps({"events": []}).encode("utf-8")
+        with patch("reputation.rdap.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.side_effect = [
+                bootstrap_response,
+                first_domain,
+                second_domain,
+            ]
+            client = RDAPClient()
+            client.lookup_domain("example.com", ["example.com"], ["From"])
+            second = client.lookup_domain("uab.edu", ["uab.edu"], ["Reply-To"])
+
+        self.assertEqual(second.status, "Lookup successful")
+        self.assertEqual(mock_urlopen.call_count, 3)
+
     def test_first_domain_failure_does_not_prevent_reply_to_lookup(self) -> None:
         client = MagicMock()
         client.lookup_domain.side_effect = [
@@ -175,6 +245,12 @@ class RDAPTests(unittest.TestCase):
         self.assertIn(
             '<th>Country</th><td><div class="domain-value">South Africa</div>', report
         )
+
+    def test_reputation_details_have_modest_vertical_separation(self) -> None:
+        message = EmailMessage()
+        message.set_content("Body")
+        report = main.build_html_report(main.build_summary_data(message))
+        self.assertIn(".reputation-details + .reputation-details { margin-top: 16px; }", report)
 
 
 if __name__ == "__main__":
