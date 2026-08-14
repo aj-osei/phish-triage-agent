@@ -1,148 +1,101 @@
-# Phish Pharm / Phishing Triage Agent
+# Phish Pharm
 
-Phish Pharm is a local Python tool that parses `.eml` email files and creates analyst-friendly phishing triage reports.
+Phish Pharm is a local Python tool that parses `.eml` files and generates analyst-friendly phishing triage reports.
 
-The goal is to help SOC analysts review email evidence faster by collecting common message details in one place. The tool does **not** make a final malicious or safe verdict.
+It is designed to help SOC analysts review common email evidence faster by collecting useful indicators and reputation context in one place.
 
-## MVP Status
+**Phish Pharm assists analysis — it does not make a final malicious or safe verdict.**
 
-Current MVP supports:
+## What It Does
 
-- Local `.eml` parsing
-- HTML triage reports
-- Quick Checks summary
+Phish Pharm currently provides:
+
+- Email sender, recipient, subject, and message details
+- Quick Checks for common phishing indicators
+- SPF, DKIM, and DMARC results
+- Sender IP analysis
+- AbuseIPDB sender-IP reputation
 - URL and Microsoft Safe Links extraction
-- Optional VirusTotal existing-report URL and attachment-hash reputation lookups
-- RDAP domain-registration context for email and URL domains
-- SPF, DKIM, and DMARC summaries
-- Attachment and inline content summaries
-- Received-header hop details
-- Windows launcher with Desktop Inbox/Reports workflow
+- VirusTotal URL reputation
+- VirusTotal attachment SHA-256 reputation
+- RDAP domain registration context
+- Attachment and inline-content summaries
+- Email body preview
+- Received-header routing details
+- HTML triage reports
 
 ## Quick Start
 
-For normal Windows use:
-
 1. Extract the project ZIP.
-2. Make sure Python 3.10+ is installed and added to PATH.
+2. Make sure **Python 3.10+** is installed and available on PATH.
 3. Double-click `Start_Phish_Pharm.bat`.
-4. Drop `.eml` files into `Desktop\Inbox`.
-5. Open generated `.html` reports from `Desktop\Reports`.
-6. Press `Ctrl+C` in the launcher window to stop the watcher.
+4. Complete the guided setup if prompted.
+5. Drop `.eml` files into `Desktop\Inbox`.
+6. Open completed reports from `Desktop\Reports`.
+7. Press `Ctrl+C` in the launcher window to stop Phish Pharm.
 
-For a shorter user guide, see `HOW_TO_USE.txt`.
+For additional instructions, see `HOW_TO_USE.txt`.
 
-On first run, the launcher checks local Python packages and offers to install missing
-requirements only after you confirm. It uses this command with the same Python interpreter:
+## First-Run Setup
 
-```powershell
-python -m pip install -r requirements.txt
-```
+The Windows launcher checks whether the required Python packages are installed and can install missing requirements after confirmation.
 
-Installation may require internet and package-index access. The launcher can also optionally
-collect AbuseIPDB and VirusTotal keys through hidden input and save them as Windows user-level
-environment variables. Keys are never saved in the project folder or displayed. This setup is
-optional: without the keys, local parsing still works, while sender-IP or URL/attachment
-reputation checks are skipped as applicable. RDAP needs no key.
+It can also optionally configure:
 
-## Command Line Usage
+- `ABUSEIPDB_API_KEY`
+- `VIRUSTOTAL_API_KEY`
 
-Run one email:
+API keys are stored as Windows user environment variables and are not saved inside the project.
 
-```powershell
-python src/main.py path\to\email.eml --format html
-```
+Missing API keys do **not** prevent Phish Pharm from running. The affected reputation checks are simply skipped.
 
-Run a folder of `.eml` files:
+RDAP domain registration lookups do not require an API key.
 
-```powershell
-python src/main.py path\to\folder --output reports --format html
-```
-
-Start watch mode:
-
-```powershell
-python src/main.py --watch inbox --output reports --format html
-```
-
-The CLI also supports `--format md` and `--format both`.
-
-Use `python src/main.py --check` to print watch-folder, Python, and reputation-provider
-readiness without starting the watcher or making external requests. The Windows launcher
-shows the same check automatically. Missing AbuseIPDB or VirusTotal keys do not stop local
-parsing; the related reputation checks are skipped. RDAP needs no API key, and key values are
-never displayed.
-
-`--check` is always noninteractive: it does not install packages, request API keys, or modify
-environment variables. You may still configure keys manually with the commands below; never
-paste them into source files or GitHub.
-
-## Reputation API Configuration
-
-Sender-IP and VirusTotal reputation checks are optional. Set API keys before launching the tool or the watch-mode batch file; never place real keys in source files, reports, or GitHub.
+## Reputation Checks
 
 ### AbuseIPDB
 
-Windows Command Prompt:
+- Checks the selected sender IP
+- Displays abuse confidence, reports, reported activity, ISP, usage type, and country
 
-```cmd
-set ABUSEIPDB_API_KEY=your_key_here
-```
+### VirusTotal
 
-PowerShell:
+- Retrieves existing reports for extracted URLs
+- Retrieves existing reports using attachment SHA-256 hashes
+- Does not upload attachments
+- Does not submit URLs for new scans
+- Uses a limited request budget per report
 
-```powershell
-$env:ABUSEIPDB_API_KEY="your_key_here"
-```
+### RDAP
 
-### VirusTotal URL and Attachment Hash Reputation
+- Provides domain registration context
+- Uses the IANA RDAP bootstrap registry
+- Does not visit the domain's website
+- Registration information is supporting context, not a verdict
 
-VirusTotal lookups retrieve existing URL and file-hash reports only. URLs are not visited or submitted for scanning. For normal file attachments, the tool sends only the existing SHA-256 hash to retrieve a report; it never uploads, rescans, opens, or executes the attachment. Inline and embedded content is excluded.
+## Safety
 
-URL and attachment-hash checks share one rolling public-API budget of at most four total requests per report. When both are available, lookups alternate in deterministic order beginning with an attachment hash. Reports can therefore show partial coverage. A zero-detection result does not prove a URL or file is safe, and a real API key must never be committed to GitHub.
+Phish Pharm is designed to inspect email evidence without interacting with potentially malicious content.
 
-Windows Command Prompt:
+- URLs are not opened by the tool.
+- Unsafe email HTML is not rendered.
+- Attachments are not opened or executed.
+- Attachments are not uploaded to VirusTotal.
+- API keys are not written into reports.
+- Analyst review is always required.
 
-```cmd
-set VIRUSTOTAL_API_KEY=your_key_here
-```
+Do not commit real phishing emails, credentials, tickets, API keys, or other sensitive information to the repository.
 
-PowerShell:
+## Current Limitations
 
-```powershell
-$env:VIRUSTOTAL_API_KEY="your_key_here"
-```
+- Supports `.eml` files only
+- Requires Python
+- Watch mode monitors one folder
+- Reputation checks depend on provider availability and configured API keys
+- Results depend on the evidence available in the original email
 
-### Domain Registration Context
+---
 
-Domain registration data is retrieved through RDAP; no additional API key is required. The tool uses the IANA RDAP bootstrap registry to discover the authoritative provider, and does not visit or render represented websites. Up to 10 unique registered domains per report are checked. Domain age is an analyst indicator, not a verdict; privacy-redacted registration data is normal. RDAP failures do not prevent report generation. DomainTools enrichment may be added later if approved.
+For normal analyst use, start Phish Pharm with:
 
-## Running Tests
-
-```powershell
-python -m unittest discover -s tests -v
-python -m py_compile src/main.py tests/test_url_extraction.py
-```
-
-## Safety Notes
-
-- The tool does not open URLs.
-- The tool does not render unsafe email HTML.
-- Optional reputation checks send only URLs and attachment SHA-256 hashes to the configured providers; attachments are never uploaded.
-- Analyst review is still required.
-- Do not commit real phishing emails, tickets, credentials, or sensitive data.
-
-## Known Limitations
-
-- Python must be installed and available on PATH.
-- Watch mode monitors one folder only, not subfolders.
-- The tool currently supports `.eml` files.
-- The tool does not make final verdicts.
-- Report quality depends on the data available in the parsed email.
-
-## Possible Future Improvements
-
-- Package as an executable so Python is not required.
-- Add a domain reputation provider.
-- Add more sample emails and tests.
-- Improve handling of legitimate third-party/bounce sender patterns.
+`Start_Phish_Pharm.bat`
