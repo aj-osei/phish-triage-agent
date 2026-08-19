@@ -310,6 +310,63 @@ class URLExtractionTests(unittest.TestCase):
             ["Not calculated", "1m 30s", "Not calculated"],
         )
 
+        self.assertEqual(
+            main.calculate_received_hop_delays(
+                [
+                    {"timestamp": "Wed, 1 Jan 2025 00:00:00 +0000"},
+                    {"timestamp": "Wed, 1 Jan 2025 01:30:00 +0100"},
+                ]
+            ),
+            ["Not calculated", "30m"],
+        )
+        self.assertEqual(
+            main.calculate_received_hop_delays(
+                [
+                    {"timestamp": "Wed, 1 Jan 2025 00:00:00"},
+                    {"timestamp": "Wed, 1 Jan 2025 00:01:00"},
+                ]
+            ),
+            ["Not calculated", "1m"],
+        )
+        for routes in (
+            [
+                {"timestamp": "Wed, 1 Jan 2025 00:00:00 +0000"},
+                {"timestamp": "Wed, 1 Jan 2025 00:01:00"},
+            ],
+            [
+                {"timestamp": "Wed, 1 Jan 2025 00:00:00"},
+                {"timestamp": "Wed, 1 Jan 2025 00:01:00 +0000"},
+            ],
+            [
+                {"timestamp": "not a timestamp"},
+                {"timestamp": "Wed, 1 Jan 2025 00:01:00 +0000"},
+            ],
+            [
+                {"timestamp": "Not found"},
+                {"timestamp": "Wed, 1 Jan 2025 00:01:00 +0000"},
+            ],
+        ):
+            with self.subTest(routes=routes):
+                self.assertEqual(
+                    main.calculate_received_hop_delays(routes),
+                    ["Not calculated", "Not calculated"],
+                )
+
+    def test_html_received_routes_render_when_hop_delay_is_incomparable(self) -> None:
+        message = EmailMessage()
+        message["Received"] = (
+            "from sender.example by relay.example; Wed, 1 Jan 2025 00:01:00"
+        )
+        message["Received"] = (
+            "from relay.example by recipient.example; Wed, 1 Jan 2025 00:00:00 +0000"
+        )
+        message.set_content("Body")
+
+        report = main.build_html_report(main.build_summary_data(message))
+
+        self.assertIn("<h3>Hop 1</h3>", report)
+        self.assertIn("<th>Delay</th><td>Not calculated</td>", report)
+
     def test_manual_folder_processing_honors_output_and_format(self) -> None:
         input_folder = Path("samples").resolve()
         output_folder = Path("custom_reports").resolve()
@@ -533,6 +590,45 @@ class URLExtractionTests(unittest.TestCase):
         self.assertIn(str(watch_folder), console_output.getvalue())
         self.assertIn("New .eml file detected: new_email.eml", console_output.getvalue())
         self.assertIn("new_email_report_2.md", console_output.getvalue())
+        self.assertIn("Stopped watching folder.", console_output.getvalue())
+
+    def test_watch_mode_skips_unexpected_single_file_failure_and_continues(self) -> None:
+        watch_folder = Path("samples").resolve()
+        broken_file = watch_folder / "broken.eml"
+        good_file = watch_folder / "good.eml"
+        output_folder = Path("custom_reports").resolve()
+        good_result = {
+            "input_file": good_file,
+            "markdown_report": None,
+            "html_report": output_folder / "good_report.html",
+            "error": None,
+        }
+
+        with (
+            patch.object(main, "list_eml_files", side_effect=[[], [broken_file, good_file]]),
+            patch.object(
+                main,
+                "get_file_signature",
+                side_effect=[(1, 1), (1, 1), (2, 2), (2, 2)],
+            ),
+            patch.object(main, "is_file_size_stable", return_value=True),
+            patch.object(
+                main,
+                "process_eml_file",
+                side_effect=[RuntimeError("bad message"), good_result],
+            ) as process_file,
+            patch.object(main.time, "sleep", side_effect=KeyboardInterrupt),
+        ):
+            console_output = io.StringIO()
+            with redirect_stdout(console_output):
+                main.run_watch_mode(watch_folder, output_folder, "html")
+
+        self.assertEqual(process_file.call_count, 2)
+        self.assertIn(
+            "Error processing broken.eml: unexpected processing error; skipped.",
+            console_output.getvalue(),
+        )
+        self.assertIn("good_report.html", console_output.getvalue())
         self.assertIn("Stopped watching folder.", console_output.getvalue())
 
 

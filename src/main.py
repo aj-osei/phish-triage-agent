@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import html
 import os
 import re
@@ -642,30 +642,60 @@ def format_received_hop_delay(total_seconds: float) -> str:
     return " ".join(parts)
 
 
+def parse_received_timestamp(timestamp_text: object) -> datetime | None:
+    """Parse a Received timestamp, normalizing only timestamps with an explicit offset."""
+    if not isinstance(timestamp_text, str) or timestamp_text == "Not found":
+        return None
+    try:
+        timestamp = parsedate_to_datetime(timestamp_text)
+        if timestamp.tzinfo is not None and timestamp.utcoffset() is not None:
+            return timestamp.astimezone(timezone.utc)
+        return timestamp
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def received_timestamps_are_comparable(
+    previous_timestamp: datetime, current_timestamp: datetime
+) -> bool:
+    """Compare aware timestamps together or naive timestamps together, never mixed."""
+    try:
+        previous_is_aware = (
+            previous_timestamp.tzinfo is not None
+            and previous_timestamp.utcoffset() is not None
+        )
+        current_is_aware = (
+            current_timestamp.tzinfo is not None
+            and current_timestamp.utcoffset() is not None
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return previous_is_aware == current_is_aware
+
+
 def calculate_received_hop_delays(received_routes: List[Dict[str, object]]) -> List[str]:
     """Calculate delays for routes ordered from earliest observed to latest."""
     delays: List[str] = []
     previous_timestamp = None
 
     for route in received_routes:
-        timestamp_text = str(route.get("timestamp", "Not found"))
-        try:
-            current_timestamp = (
-                parsedate_to_datetime(timestamp_text)
-                if timestamp_text != "Not found"
-                else None
-            )
-        except (IndexError, TypeError, ValueError):
-            current_timestamp = None
+        current_timestamp = parse_received_timestamp(route.get("timestamp", "Not found"))
 
-        if previous_timestamp is None or current_timestamp is None:
+        if (
+            previous_timestamp is None
+            or current_timestamp is None
+            or not received_timestamps_are_comparable(previous_timestamp, current_timestamp)
+        ):
             delays.append("Not calculated")
         else:
-            delays.append(
-                format_received_hop_delay(
-                    (current_timestamp - previous_timestamp).total_seconds()
+            try:
+                delays.append(
+                    format_received_hop_delay(
+                        (current_timestamp - previous_timestamp).total_seconds()
+                    )
                 )
-            )
+            except (TypeError, ValueError, OverflowError):
+                delays.append("Not calculated")
         previous_timestamp = current_timestamp
 
     return delays
@@ -2225,7 +2255,11 @@ def run_watch_mode(watch_folder: Path, output_folder: Path, report_format: str) 
                     continue
 
                 print(f"New .eml file detected: {eml_file.name}")
-                print_process_result(process_eml_file(eml_file, output_folder, report_format))
+                try:
+                    print_process_result(process_eml_file(eml_file, output_folder, report_format))
+                except Exception:
+                    # Keep a malformed email from stopping the analyst's watch session.
+                    print(f"Error processing {eml_file.name}: unexpected processing error; skipped.")
                 processed_files[eml_file] = get_file_signature(eml_file)
             time.sleep(WATCH_POLL_SECONDS)
     except KeyboardInterrupt:
