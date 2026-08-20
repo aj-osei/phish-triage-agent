@@ -99,3 +99,11 @@ Do not commit real phishing emails, credentials, tickets, API keys, or other sen
 For normal analyst use, start Phish Pharm with:
 
 `Start_Phish_Pharm.bat`
+
+## Demo
+
+
+
+https://github.com/user-attachments/assets/36e42d3b-be3f-409c-8ecc-86a2063849db
+
+
