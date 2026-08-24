@@ -1,109 +1,127 @@
 # Phish Pharm
 
-Phish Pharm is a local Python tool that parses `.eml` files and generates analyst-friendly phishing triage reports.
+Phish Pharm is a local Python tool that reads `.eml` files and creates phishing triage reports.
 
-It is designed to help SOC analysts review common email evidence faster by collecting useful indicators and reputation context in one place.
+I made it to help SOC analysts review emails faster by putting useful email details, security checks, and reputation information in one place.
 
-**Phish Pharm assists analysis — it does not make a final malicious or safe verdict.**
+**Phish Pharm helps with analysis, but it does not decide if an email is malicious or safe. The analyst still makes the final call.**
+
+## Demo
+
+https://github.com/user-attachments/assets/36e42d3b-be3f-409c-8ecc-86a2063849db
+
+## Why I Built It
+
+When reviewing phishing emails, analysts usually have to check a lot of different things like the sender, IP address, URLs, attachments, and email authentication results.
+
+I built Phish Pharm to make that process easier. Instead of checking everything separately, the tool collects a lot of that information and puts it into one report.
 
 ## What It Does
 
-Phish Pharm currently provides:
+Phish Pharm can currently:
 
-- Email sender, recipient, subject, and message details
-- Quick Checks for common phishing indicators
-- SPF, DKIM, and DMARC results
-- Sender IP analysis
-- AbuseIPDB sender-IP reputation
-- URL and Microsoft Safe Links extraction
-- VirusTotal URL reputation
-- VirusTotal attachment SHA-256 reputation
-- RDAP domain registration context
-- Attachment and inline-content summaries
-- Email body preview
-- Received-header routing details
-- HTML triage reports
+- Show the sender, recipient, subject, and other email details
+- Run Quick Checks for common phishing signs
+- Show SPF, DKIM, and DMARC results
+- Analyze the sender IP address
+- Check sender IP reputation with AbuseIPDB
+- Extract URLs and Microsoft Safe Links
+- Check URL reputation with VirusTotal
+- Check attachment SHA-256 hashes with VirusTotal
+- Show domain registration information using RDAP
+- Show attachment and inline-content details
+- Preview the email body
+- Show Received-header routing information
+- Generate an HTML triage report
+
+## Technologies Used
+
+- Python 3.10+
+- HTML
+- Windows batch scripting
+- AbuseIPDB API
+- VirusTotal API
+- RDAP
+- IANA RDAP bootstrap registry
 
 ## Quick Start
 
-1. Extract the project ZIP.
-2. Make sure **Python 3.10+** is installed and available on PATH.
+1. Download the project ZIP or clone the repository.
+2. Make sure **Python 3.10+** is installed and added to PATH.
 3. Double-click `Start_Phish_Pharm.bat`.
-4. Complete the guided setup if prompted.
+4. Follow the setup steps if prompted.
 5. Drop `.eml` files into `Desktop\Inbox`.
 6. Open completed reports from `Desktop\Reports`.
-7. Press `Ctrl+C` in the launcher window to stop Phish Pharm.
+7. Press `Ctrl+C` in the launcher window when you want to stop Phish Pharm.
 
-For additional instructions, see `HOW_TO_USE.txt`.
+For more instructions, see `HOW_TO_USE.txt`.
 
-## First-Run Setup
+## First-Time Setup
 
-The Windows launcher checks whether the required Python packages are installed and can install missing requirements after confirmation.
+The Windows launcher checks if the required Python packages are installed.
 
-It can also optionally configure:
+If anything is missing, it can ask for permission to install the required packages.
+
+It can also help set up these optional API keys:
 
 - `ABUSEIPDB_API_KEY`
 - `VIRUSTOTAL_API_KEY`
 
-API keys are stored as Windows user environment variables and are not saved inside the project.
+The API keys are saved as Windows user environment variables and are not stored inside the project files.
 
-Missing API keys do **not** prevent Phish Pharm from running. The affected reputation checks are simply skipped.
+Phish Pharm can still run without API keys. The reputation checks that need them will just be skipped.
 
-RDAP domain registration lookups do not require an API key.
+RDAP lookups do not need an API key.
 
 ## Reputation Checks
 
 ### AbuseIPDB
 
-- Checks the selected sender IP
-- Displays abuse confidence, reports, reported activity, ISP, usage type, and country
+Phish Pharm can check the selected sender IP and show information such as:
+
+- Abuse confidence score
+- Number of reports
+- Reported activity
+- ISP
+- Usage type
+- Country
 
 ### VirusTotal
 
-- Retrieves existing reports for extracted URLs
-- Retrieves existing reports using attachment SHA-256 hashes
-- Does not upload attachments
-- Does not submit URLs for new scans
-- Uses a limited request budget per report
+Phish Pharm uses VirusTotal to:
+
+- Check existing reports for extracted URLs
+- Check existing reports for attachment SHA-256 hashes
+
+The tool does not upload attachments or submit URLs for new scans.
 
 ### RDAP
 
-- Provides domain registration context
-- Uses the IANA RDAP bootstrap registry
-- Does not visit the domain's website
-- Registration information is supporting context, not a verdict
+RDAP is used to show domain registration information.
+
+Phish Pharm uses the IANA RDAP bootstrap registry to find the correct RDAP service.
+
+The tool does not visit the domain's website. Domain registration information is only used as extra context for the analyst.
 
 ## Safety
 
-Phish Pharm is designed to inspect email evidence without interacting with potentially malicious content.
+Phish Pharm is designed to inspect email evidence without directly interacting with potentially malicious content.
 
-- URLs are not opened by the tool.
-- Unsafe email HTML is not rendered.
-- Attachments are not opened or executed.
-- Attachments are not uploaded to VirusTotal.
-- API keys are not written into reports.
-- Analyst review is always required.
+- URLs are not opened
+- Unsafe email HTML is not rendered
+- Attachments are not opened or executed
+- Attachments are not uploaded to VirusTotal
+- API keys are not added to reports
+- The analyst always makes the final decision
 
-Do not commit real phishing emails, credentials, tickets, API keys, or other sensitive information to the repository.
+Real phishing emails, passwords, API keys, tickets, or other sensitive information should not be uploaded to the repository.
 
-## Current Limitations
 
-- Supports `.eml` files only
+## Limitations
+
+- Only supports `.eml` files
 - Requires Python
-- Watch mode monitors one folder
-- Reputation checks depend on provider availability and configured API keys
-- Results depend on the evidence available in the original email
-
----
-
-For normal analyst use, start Phish Pharm with:
-
-`Start_Phish_Pharm.bat`
-
-## Demo
-
-
-
-https://github.com/user-attachments/assets/36e42d3b-be3f-409c-8ecc-86a2063849db
-
-
+- Reputation checks depend on the API service being available
+- Some reputation checks require API keys
+- Results depend on the information available inside the original email
+- Phish Pharm should not be used by itself to decide whether an email is malicious
