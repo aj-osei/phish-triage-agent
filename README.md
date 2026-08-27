@@ -8,7 +8,11 @@ I made it to help SOC analysts review emails faster by putting useful email deta
 
 ## Demo
 
-https://github.com/user-attachments/assets/36e42d3b-be3f-409c-8ecc-86a2063849db
+
+
+https://github.com/user-attachments/assets/fa411518-a5ff-481b-bd89-8b6a30079fe1
+
+
 
 ## Why I Built It
 
